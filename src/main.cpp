@@ -63,7 +63,7 @@ int main(int argc, char* argv[]) {
 
         // Initialize motion estimator
         MotionEstimator motionEstimator;
-        motionEstimator.setThreshold(8.0);
+        motionEstimator.setThreshold(10.0);
 
         // Initialize GPU depth estimator
         DepthEstimator depthEstimator(
@@ -151,6 +151,15 @@ int main(int argc, char* argv[]) {
             // Resize both images
             cv::Mat resizedFrame;
             cv::Mat resizedVisualization;
+
+            // Convert grayscale depth visualization to BGR
+            if (visualization.channels() == 1) {
+                cv::cvtColor(
+                    visualization,
+                    visualization,
+                    cv::COLOR_GRAY2BGR
+                );
+            }
 
             cv::resize(
                 frame,

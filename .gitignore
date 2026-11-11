@@ -1,7 +1,7 @@
 notes.txt
 *.pdf
 
-third_party*
-models*
+third_party/*
+models/*
 build*
 assets*

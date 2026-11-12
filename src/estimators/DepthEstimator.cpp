@@ -1,4 +1,3 @@
-
 #include "estimators/DepthEstimator.hpp"
 
 #include <iostream>
@@ -15,9 +14,7 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
     std::cout << "Loading depth model: "
               << modelPath << std::endl;
 
-    // --------------------------------------------------------
-    // 1. Verify CUDA provider
-    // --------------------------------------------------------
+    // Verify CUDA provider.
 
     const auto providers = Ort::GetAvailableProviders();
 
@@ -34,9 +31,7 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
         );
     }
 
-    // --------------------------------------------------------
-    // 2. Configure ONNX Runtime
-    // --------------------------------------------------------
+    // Configure ONNX Runtime.
 
     Ort::SessionOptions sessionOptions;
 
@@ -60,9 +55,7 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
         cudaOptions
     );
 
-    // --------------------------------------------------------
-    // 3. Load model
-    // --------------------------------------------------------
+    // Load model.
 
     session = Ort::Session(
         env,
@@ -91,9 +84,7 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
               << std::endl;
 }
 
-// ------------------------------------------------------------
 // Prediction
-// ------------------------------------------------------------
 
 void DepthEstimator::predict(const cv::Mat& frame) {
 
@@ -105,9 +96,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         return;
     }
 
-    // --------------------------------------------------------
-    // 1. Letterbox preprocessing
-    // --------------------------------------------------------
+    // Letterbox preprocessing.
 
     const double scale = std::min(
         static_cast<double>(inputWidth) / frame.cols,
@@ -123,8 +112,8 @@ void DepthEstimator::predict(const cv::Mat& frame) {
     const int padLeft =
         (inputWidth - resizedWidth) / 2;
 
-    const int padRight =
-        inputWidth - resizedWidth - padLeft;
+    // const int padRight =
+    //     inputWidth - resizedWidth - padLeft;
 
     const int padTop =
         (inputHeight - resizedHeight) / 2;
@@ -151,14 +140,12 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         padTop,
         padBottom,
         padLeft,
-        padRight,
+        padBottom,
         cv::BORDER_CONSTANT,
         cv::Scalar(114, 114, 114)
     );
 
-    // --------------------------------------------------------
-    // 2. Prepare input tensor
-    // --------------------------------------------------------
+    // Prepare input tensor.
 
     cv::Mat blob = cv::dnn::blobFromImage(
         letterboxed,
@@ -192,9 +179,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
             inputShape.size()
         );
 
-    // --------------------------------------------------------
-    // 3. Run ONNX inference on CUDA
-    // --------------------------------------------------------
+    // Run ONNX inference on CUDA.
 
     const char* inputNames[] = {
         inputName_.c_str()
@@ -213,9 +198,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         1
     );
 
-    // --------------------------------------------------------
-    // 4. Validate model output
-    // --------------------------------------------------------
+    // Validate model output.
 
     auto& outputTensor = outputTensors.front();
 
@@ -238,9 +221,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         );
     }
 
-    // --------------------------------------------------------
-    // 5. Access output without cloning
-    // --------------------------------------------------------
+    // Access output without cloning.
 
     const float* outputData =
         outputTensor.GetTensorData<float>();
@@ -255,9 +236,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         const_cast<float*>(outputData)
     );
 
-    // --------------------------------------------------------
-    // 6. Remove letterbox padding
-    // --------------------------------------------------------
+    // Remove letterbox padding.
 
     const cv::Rect validRegion(
         padLeft,
@@ -281,9 +260,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         cv::INTER_LINEAR
     );
 
-    // --------------------------------------------------------
-    // 7. Generate and cache grayscale visualization
-    // --------------------------------------------------------
+    // Generate and cache grayscale visualization.
 
     cv::Mat normalized;
 
@@ -303,9 +280,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
     );
 }
 
-// ------------------------------------------------------------
 // Visualization
-// ------------------------------------------------------------
 
 cv::Mat DepthEstimator::visualize() const {
 
@@ -316,27 +291,21 @@ cv::Mat DepthEstimator::visualize() const {
     return depthVisualization_.clone();
 }
 
-// ------------------------------------------------------------
 // Result availability
-// ------------------------------------------------------------
 
 bool DepthEstimator::hasResult() const {
 
     return !depthResult_.empty();
 }
 
-// ------------------------------------------------------------
 // Raw depth access
-// ------------------------------------------------------------
 
 const cv::Mat& DepthEstimator::getDepth() const {
 
     return depthResult_;
 }
 
-// ------------------------------------------------------------
 // Nearest distance estimation
-// ------------------------------------------------------------
 
 float DepthEstimator::nearestDistanceMeters() const {
 

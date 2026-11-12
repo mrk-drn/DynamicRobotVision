@@ -33,11 +33,11 @@ constexpr int MASK_HEIGHT = 160;
 constexpr int MASK_SIZE =
     MASK_WIDTH * MASK_HEIGHT;
 
-constexpr float CONFIDENCE_THRESHOLD = 0.35f;
+constexpr float CONFIDENCE_THRESHOLD = 0.05f;
 constexpr float MASK_THRESHOLD = 0.5f;
-constexpr float MASK_OPACITY = 0.35f;
+constexpr float MASK_OPACITY = 0.5f;
 
-constexpr float NMS_THRESHOLD = 0.45f;
+constexpr float NMS_THRESHOLD = 0.90f;
 
 
 const std::array<cv::Scalar, NUM_CLASSES>& getClassColors() {
@@ -95,10 +95,6 @@ struct Instance {
 };
 
 }
-
-// ------------------------------------------------------------
-// Constructor
-// ------------------------------------------------------------
 
 SegmentationEstimator::SegmentationEstimator(
     const std::string& modelPath
@@ -181,10 +177,6 @@ SegmentationEstimator::SegmentationEstimator(
               << std::endl;
 }
 
-// ------------------------------------------------------------
-// Interface
-// ------------------------------------------------------------
-
 PredictionType SegmentationEstimator::type() const {
 
     return PredictionType::SEGMENTATION;
@@ -200,10 +192,7 @@ bool SegmentationEstimator::hasResult() const {
     return !visualization_.empty();
 }
 
-// ------------------------------------------------------------
 // Prediction
-// ------------------------------------------------------------
-
 void SegmentationEstimator::predict(const cv::Mat& frame) {
 
     if (frame.empty()) {
@@ -212,9 +201,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         return;
     }
 
-    // --------------------------------------------------------
-    // 1. Letterbox preprocessing
-    // --------------------------------------------------------
+    // Letterbox preprocessing
 
     const double scale = std::min(
         static_cast<double>(INPUT_WIDTH) / frame.cols,
@@ -263,9 +250,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         cv::Scalar(114, 114, 114)
     );
 
-    // --------------------------------------------------------
-    // 2. Create input tensor
-    // --------------------------------------------------------
+    // Create input tensor
 
     cv::Mat blob = cv::dnn::blobFromImage(
         letterboxed,
@@ -299,9 +284,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             4
         );
 
-    // --------------------------------------------------------
-    // 3. Run ONNX inference on CUDA
-    // --------------------------------------------------------
+    // Run ONNX inference on CUDA
 
     Ort::AllocatorWithDefaultOptions allocator;
 
@@ -329,9 +312,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         2
     );
 
-    // --------------------------------------------------------
-    // 4. Validate detection output
-    // --------------------------------------------------------
+    // Validate detection output
 
     auto detectionInfo =
         outputs[0].GetTensorTypeAndShapeInfo();
@@ -357,9 +338,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
     const float* detections =
         outputs[0].GetTensorData<float>();
 
-    // --------------------------------------------------------
-    // 5. Validate prototype output
-    // --------------------------------------------------------
+    // Validate prototype output
 
     auto prototypeInfo =
         outputs[1].GetTensorTypeAndShapeInfo();
@@ -387,41 +366,13 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         outputs[1].GetTensorData<float>();
 
 
-    // --------------------------------------------------------
-    // 6. Decode candidate instances
-    // --------------------------------------------------------
+    // Decode candidate instances for every qualifying class.
 
     std::vector<Instance> instances;
 
-    instances.reserve(256);
+    instances.reserve(512);
 
     for (int i = 0; i < NUM_PREDICTIONS; ++i) {
-
-        float bestScore = 0.0f;
-        int bestClass = -1;
-
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-
-            const float score =
-                detections[
-                    (4 + c) * NUM_PREDICTIONS + i
-                ];
-
-            if (
-                std::isfinite(score) &&
-                score > bestScore
-            ) {
-                bestScore = score;
-                bestClass = c;
-            }
-        }
-
-        if (
-            bestClass < 0 ||
-            bestScore < CONFIDENCE_THRESHOLD
-        ) {
-            continue;
-        }
 
         const float cx = detections[i];
 
@@ -492,27 +443,41 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             continue;
         }
 
-        Instance instance;
+        // Evaluate every class independently.
+        for (int c = 0; c < NUM_CLASSES; ++c) {
 
-        instance.box = box;
-        instance.classId = bestClass;
-        instance.confidence = bestScore;
-
-        for (int m = 0; m < NUM_MASK_COEFFS; ++m) {
-
-            instance.coefficients[m] =
+            const float score =
                 detections[
-                    (4 + NUM_CLASSES + m) *
-                    NUM_PREDICTIONS + i
+                    (4 + c) * NUM_PREDICTIONS + i
                 ];
-        }
 
-        instances.push_back(std::move(instance));
+            if (
+                !std::isfinite(score) ||
+                score < CONFIDENCE_THRESHOLD
+            ) {
+                continue;
+            }
+
+            Instance instance;
+
+            instance.box = box;
+            instance.classId = c;
+            instance.confidence = score;
+
+            for (int m = 0; m < NUM_MASK_COEFFS; ++m) {
+
+                instance.coefficients[m] =
+                    detections[
+                        (4 + NUM_CLASSES + m) *
+                        NUM_PREDICTIONS + i
+                    ];
+            }
+
+            instances.push_back(std::move(instance));
+        }
     }
 
-    // --------------------------------------------------------
-    // 7. Class-aware NMS
-    // --------------------------------------------------------
+    // Class-aware NMS
 
     std::vector<Instance> filteredInstances;
 
@@ -564,9 +529,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         }
     }
 
-    // --------------------------------------------------------
-    // 8. Sort by confidence
-    // --------------------------------------------------------
+    // Sort by confidence
 
     std::sort(
         filteredInstances.begin(),
@@ -586,9 +549,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         return;
     }
 
-    // --------------------------------------------------------
-    // 9. Upload prototype matrix to CUDA
-    // --------------------------------------------------------
+    // Upload prototype matrix to CUDA
 
     cv::Mat prototypeMatrix(
         NUM_MASK_COEFFS,
@@ -601,9 +562,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
 
     gpuPrototypes.upload(prototypeMatrix);
 
-    // --------------------------------------------------------
-    // 10. Prepare CUDA visualization buffers
-    // --------------------------------------------------------
+    // Prepare CUDA visualization buffers
 
     cv::cuda::GpuMat gpuFrame;
 
@@ -623,9 +582,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
 
     gpuFrame.copyTo(gpuVisualization);
 
-    // --------------------------------------------------------
-    // 11. Prepare reusable CUDA buffers
-    // --------------------------------------------------------
+    // Prepare reusable CUDA buffers
 
     cv::cuda::GpuMat gpuMaskLogits;
     cv::cuda::GpuMat gpuProbabilities;
@@ -639,14 +596,11 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
 
     const auto& classColors = getClassColors();
 
-
-    // --------------------------------------------------------
-    // 12. Reconstruct all instance masks on CUDA
-    // --------------------------------------------------------
+    // Reconstruct all instance masks on CUDA
 
     for (const auto& instance : filteredInstances) {
 
-        // 12.1 Upload mask coefficients.
+        // Upload mask coefficients.
 
         cv::Mat coefficients(
             1,
@@ -661,7 +615,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
 
         gpuCoefficients.upload(coefficients);
 
-        // 12.2 Matrix multiplication:
+        // Matrix multiplication:
         //
         // [1 x 32] * [32 x 36864]
         // = [1 x 36864]
@@ -682,7 +636,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             MASK_HEIGHT
         );
 
-        // 12.3 Sigmoid activation:
+        // Sigmoid activation:
         //
         // sigmoid(x) = 1 / (1 + exp(-x))
 
@@ -711,7 +665,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             gpuProbabilities
         );
 
-        // 12.4 Resize to model input resolution.
+        // Resize to model input resolution.
 
         cv::cuda::resize(
             gpuProbabilities,
@@ -722,7 +676,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             cv::INTER_LINEAR
         );
 
-        // 12.5 Remove letterbox padding.
+        // Remove letterbox padding.
 
         gpuCroppedMask = gpuFullMask(
             cv::Rect(
@@ -733,7 +687,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             )
         );
 
-        // 12.6 Restore original frame dimensions.
+        // Restore original frame dimensions.
 
         cv::cuda::resize(
             gpuCroppedMask,
@@ -744,12 +698,12 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             cv::INTER_LINEAR
         );
 
-        // 12.7 Extract only the instance ROI.
+        // Extract only the instance ROI.
 
         cv::cuda::GpuMat gpuInstanceROI =
             gpuOriginalMask(instance.box);
 
-        // 12.8 Threshold mask on GPU.
+        // Threshold mask on GPU.
 
         cv::cuda::compare(
             gpuInstanceROI,
@@ -758,7 +712,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             cv::CMP_GT
         );
 
-        // 12.9 Skip empty masks.
+        // Skip empty masks.
         //
         // Downloading this small ROI mask for the empty check
         // would add synchronization overhead. Instead, let
@@ -766,7 +720,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         //
         // Empty masks have no effect.
 
-        // 12.10 Color foreground pixels.
+        // Color foreground pixels.
 
         gpuColorROI = gpuColorLayer(instance.box);
 
@@ -775,7 +729,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
             gpuBinaryMask
         );
 
-        // 12.11 Update combined foreground mask.
+        // Update combined foreground mask.
 
         gpuCombinedROI = gpuCombinedMask(instance.box);
 
@@ -788,9 +742,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         );   
     }
 
-    // --------------------------------------------------------
-    // 13. Blend on GPU
-    // --------------------------------------------------------
+    // Blend on GPU
 
     cv::cuda::GpuMat gpuBlended;
 
@@ -810,17 +762,13 @@ void SegmentationEstimator::predict(const cv::Mat& frame) {
         gpuCombinedMask
     );
 
-    // --------------------------------------------------------
-    // 14. Download final visualization only
-    // --------------------------------------------------------
+    // Download final visualization only
 
     gpuVisualization.download(visualization_);
 
 }
 
-// ------------------------------------------------------------
 // Visualization
-// ------------------------------------------------------------
 
 cv::Mat SegmentationEstimator::visualize() const {
 

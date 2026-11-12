@@ -22,7 +22,7 @@ constexpr double TARGET_FPS = 15.0;
 constexpr int OUTPUT_WIDTH = 1280;
 constexpr int OUTPUT_HEIGHT = 720;
 
-constexpr float CLOSE_DISTANCE_THRESHOLD = 2.0f;
+constexpr float CLOSE_DISTANCE_THRESHOLD = 3.0f;
 
 const std::string WINDOW_NAME = "AdaptivePerception";
 
@@ -220,7 +220,7 @@ int main(int argc, char* argv[]) {
                   << framesPerPrediction << std::endl;
 
         MotionEstimator motionEstimator;
-        motionEstimator.setThreshold(10.0);
+        motionEstimator.setThreshold(15.0);
 
         PredictionManager predictionManager;
 

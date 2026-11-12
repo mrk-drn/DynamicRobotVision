@@ -8,7 +8,7 @@ model = YOLO(str(model_path))
 
 exported_path = Path(model.export(
     format="onnx",
-    imgsz=768,
+    imgsz=640,
     simplify=True
 ))
 

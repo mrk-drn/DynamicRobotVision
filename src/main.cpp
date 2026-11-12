@@ -1,51 +1,186 @@
+
 #include <iostream>
+#include <memory>
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <cmath>
+#include <algorithm>
+
 #include <opencv2/opencv.hpp>
 
-#include "MotionEstimator.hpp"
-#include "DepthEstimator.hpp"
+#include "core/PredictionManager.hpp"
+#include "estimators/MotionEstimator.hpp"
+#include "estimators/DepthEstimator.hpp"
+#include "estimators/SegmentationEstimator.hpp"
+#include "visualization/Visualizer.hpp"
 
-// Convert metric depth into a color visualization.
-cv::Mat colorizeDepth(const cv::Mat& depth) {
+namespace {
 
-    cv::Mat normalizedDepth;
+constexpr double TARGET_FPS = 15.0;
 
-    // Normalize depth values to [0, 255]
-    cv::normalize(
-        depth,
-        normalizedDepth,
-        0,
-        255,
-        cv::NORM_MINMAX,
-        CV_8U
+constexpr int OUTPUT_WIDTH = 1280;
+constexpr int OUTPUT_HEIGHT = 720;
+
+constexpr float CLOSE_DISTANCE_THRESHOLD = 2.0f;
+
+const std::string WINDOW_NAME = "AdaptivePerception";
+
+cv::Mat fitToCanvas(
+    const cv::Mat& source,
+    const cv::Size& canvasSize,
+    const cv::Scalar& background = cv::Scalar(25, 25, 25)
+) {
+    cv::Mat canvas(
+        canvasSize,
+        CV_8UC3,
+        background
     );
 
-    // Convert to grayscale visualization
-    return normalizedDepth;
+    if (source.empty()) {
+        return canvas;
+    }
+
+    const double scale = std::min(
+        static_cast<double>(canvasSize.width) / source.cols,
+        static_cast<double>(canvasSize.height) / source.rows
+    );
+
+    const int width = std::max(
+        1,
+        static_cast<int>(std::round(source.cols * scale))
+    );
+
+    const int height = std::max(
+        1,
+        static_cast<int>(std::round(source.rows * scale))
+    );
+
+    cv::Mat resized;
+
+    cv::resize(
+        source,
+        resized,
+        cv::Size(width, height),
+        0,
+        0,
+        cv::INTER_LINEAR
+    );
+
+    const int x = (canvasSize.width - width) / 2;
+    const int y = (canvasSize.height - height) / 2;
+
+    resized.copyTo(
+        canvas(cv::Rect(x, y, width, height))
+    );
+
+    return canvas;
+}
+
+cv::Mat createOutput(
+    const cv::Mat& frame,
+    const cv::Mat& prediction,
+    const std::string& label
+) {
+    constexpr int PANEL_GAP = 4;
+
+    const int panelWidth =
+        (OUTPUT_WIDTH - PANEL_GAP) / 2;
+
+    cv::Mat originalPanel = fitToCanvas(
+        frame,
+        cv::Size(panelWidth, OUTPUT_HEIGHT)
+    );
+
+    cv::Mat predictionPanel = fitToCanvas(
+        prediction,
+        cv::Size(panelWidth, OUTPUT_HEIGHT)
+    );
+
+    cv::Mat output(
+        OUTPUT_HEIGHT,
+        OUTPUT_WIDTH,
+        CV_8UC3,
+        cv::Scalar(15, 15, 15)
+    );
+
+    originalPanel.copyTo(
+        output(cv::Rect(
+            0,
+            0,
+            panelWidth,
+            OUTPUT_HEIGHT
+        ))
+    );
+
+    predictionPanel.copyTo(
+        output(cv::Rect(
+            panelWidth + PANEL_GAP,
+            0,
+            panelWidth,
+            OUTPUT_HEIGHT
+        ))
+    );
+
+    cv::putText(
+        output,
+        "Original",
+        cv::Point(15, 30),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.8,
+        cv::Scalar(255, 255, 255),
+        2,
+        cv::LINE_AA
+    );
+
+    cv::putText(
+        output,
+        label,
+        cv::Point(panelWidth + PANEL_GAP + 15, 30),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.8,
+        cv::Scalar(255, 255, 255),
+        2,
+        cv::LINE_AA
+    );
+
+    return output;
+}
+
+// Check whether the GTK2 window still exists.
+bool isWindowClosed() {
+    try {
+        const double property = cv::getWindowProperty(
+            WINDOW_NAME,
+            cv::WND_PROP_AUTOSIZE
+        );
+
+        return property < 0.0;
+    }
+    catch (const cv::Exception&) {
+        return true;
+    }
+}
+
 }
 
 int main(int argc, char* argv[]) {
 
     try {
 
-        std::cout << "AdaptivePerception started!" << std::endl;
+        std::cout << "AdaptivePerception started!"
+                  << std::endl;
 
         cv::VideoCapture cap;
 
-        // Open video file or webcam
         if (argc > 1) {
 
-            std::string videoPath = argv[1];
+            const std::string videoPath = argv[1];
 
             std::cout << "Loading video: "
                       << videoPath << std::endl;
 
             cap.open(videoPath);
-
-            if (!cap.isOpened()) {
-                std::cerr << "Could not open video file: "
-                          << videoPath << std::endl;
-                return 1;
-            }
         }
         else {
 
@@ -53,155 +188,217 @@ int main(int argc, char* argv[]) {
                       << std::endl;
 
             cap.open(0);
-
-            if (!cap.isOpened()) {
-                std::cout << "No webcam found. Exiting."
-                          << std::endl;
-                return 0;
-            }
         }
 
-        // Initialize motion estimator
+        if (!cap.isOpened()) {
+            throw std::runtime_error(
+                "Could not open video source."
+            );
+        }
+
+        double videoFPS = cap.get(cv::CAP_PROP_FPS);
+
+        if (!std::isfinite(videoFPS) || videoFPS <= 0.0) {
+            videoFPS = TARGET_FPS;
+
+            std::cout
+                << "Warning: Could not determine video FPS. "
+                << "Assuming 15 FPS."
+                << std::endl;
+        }
+
+        const double framesPerPrediction =
+            videoFPS / TARGET_FPS;
+
+        std::cout << "Video FPS: "
+                  << videoFPS << std::endl;
+
+        std::cout << "Target prediction FPS: "
+                  << TARGET_FPS << std::endl;
+
+        std::cout << "Average frames per prediction: "
+                  << framesPerPrediction << std::endl;
+
         MotionEstimator motionEstimator;
         motionEstimator.setThreshold(10.0);
 
-        // Initialize GPU depth estimator
-        DepthEstimator depthEstimator(
-            "models/yolo26n-depth.onnx"
+        PredictionManager predictionManager;
+
+        predictionManager.addPrediction(
+            std::make_unique<DepthEstimator>(
+                "models/yolo26n-depth.onnx"
+            )
+        );
+
+        predictionManager.addPrediction(
+            std::make_unique<SegmentationEstimator>(
+                "models/yolo26n-seg.onnx"
+            )
+        );
+
+        auto* depthEstimator =
+            dynamic_cast<DepthEstimator*>(
+                predictionManager.getPrediction(
+                    PredictionType::DEPTH
+                )
+            );
+
+        if (!depthEstimator) {
+            throw std::runtime_error(
+                "Depth estimator not registered."
+            );
+        }
+
+        cv::namedWindow(
+            WINDOW_NAME,
+            cv::WINDOW_NORMAL
+        );
+
+        cv::resizeWindow(
+            WINDOW_NAME,
+            OUTPUT_WIDTH,
+            OUTPUT_HEIGHT
         );
 
         cv::Mat frame;
+        cv::Mat cachedVisualization;
 
-        // Store latest depth prediction
-        cv::Mat lastDepth;
-        bool hasDepth = false;
+        std::string cachedLabel = "Waiting for prediction...";
 
-        while (true) {
+        long long frameIndex = 0;
+        double nextPredictionFrame = 0.0;
+
+        bool running = true;
+
+        while (running) {
 
             if (!cap.read(frame) || frame.empty()) {
-                std::cout << "End of video or failed to capture frame."
-                          << std::endl;
                 break;
             }
 
-            // Estimate motion
-            MotionState motionState =
-                motionEstimator.estimateMotion(frame);
+            const bool runPrediction =
+                static_cast<double>(frameIndex) + 1e-9 >=
+                nextPredictionFrame;
 
-            // Run depth estimation when motion is detected
-            if (motionState == MotionState::MOVING) {
+            if (runPrediction) {
 
-                lastDepth = depthEstimator.estimateDepth(frame);
+                nextPredictionFrame += framesPerPrediction;
 
-                hasDepth = !lastDepth.empty();
+                const MotionState motionState =
+                    motionEstimator.estimateMotion(frame);
+
+                bool showSegmentation = false;
+
+                if (motionState == MotionState::MOVING) {
+
+                    predictionManager.runPrediction(
+                        PredictionType::DEPTH,
+                        frame
+                    );
+                }
+                else if (depthEstimator->hasResult()) {
+
+                    const float nearestDistance =
+                        depthEstimator->nearestDistanceMeters();
+
+                    if (
+                        nearestDistance >= 0.0f &&
+                        nearestDistance < CLOSE_DISTANCE_THRESHOLD
+                    ) {
+
+                        predictionManager.runPrediction(
+                            PredictionType::SEGMENTATION,
+                            frame
+                        );
+
+                        showSegmentation = true;
+                    }
+                }
+
+                if (showSegmentation) {
+
+                    cachedVisualization =
+                        predictionManager.getVisualization(
+                            PredictionType::SEGMENTATION
+                        );
+
+                    cachedLabel = "Segmentation";
+                }
+                else {
+
+                    cachedVisualization =
+                        predictionManager.getVisualization(
+                            PredictionType::DEPTH
+                        );
+
+                    cachedLabel =
+                        motionState == MotionState::MOVING
+                        ? "Depth"
+                        : "Depth (Cached)";
+                }
+
+                if (cachedVisualization.empty()) {
+
+                    cachedVisualization = cv::Mat(
+                        frame.size(),
+                        CV_8UC3,
+                        cv::Scalar(30, 30, 30)
+                    );
+
+                    cachedLabel = "Waiting for prediction...";
+                }
             }
 
-            // Create visualization
-            cv::Mat visualization;
-
-            if (hasDepth) {
-
-                visualization = colorizeDepth(lastDepth);
-
-                std::string label =
-                    motionState == MotionState::MOVING
-                    ? "Depth Estimation (GPU)"
-                    : "Depth (Cached)";
-
-                cv::putText(
-                    visualization,
-                    label,
-                    cv::Point(20, 35),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    cv::Scalar(255, 255, 255),
-                    2
-                );
-            }
-            else {
-
-                visualization = cv::Mat(
-                    frame.size(),
-                    CV_8UC3,
-                    cv::Scalar(30, 30, 30)
-                );
-
-                cv::putText(
-                    visualization,
-                    "Waiting for motion...",
-                    cv::Point(20, 50),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    cv::Scalar(255, 255, 255),
-                    2
-                );
-            }
-
-            // Label original frame
-            cv::putText(
+            cv::Mat combined = createOutput(
                 frame,
-                "Original Frame",
-                cv::Point(20, 35),
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.8,
-                cv::Scalar(255, 255, 255),
-                2
+                cachedVisualization,
+                cachedLabel
             );
 
-            // Resize both images
-            cv::Mat resizedFrame;
-            cv::Mat resizedVisualization;
-
-            // Convert grayscale depth visualization to BGR
-            if (visualization.channels() == 1) {
-                cv::cvtColor(
-                    visualization,
-                    visualization,
-                    cv::COLOR_GRAY2BGR
-                );
-            }
-
-            cv::resize(
-                frame,
-                resizedFrame,
-                cv::Size(),
-                0.4,
-                0.4
-            );
-
-            cv::resize(
-                visualization,
-                resizedVisualization,
-                cv::Size(),
-                0.4,
-                0.4
-            );
-
-            // Combine images
-            cv::Mat combined;
-
-            cv::hconcat(
-                resizedFrame,
-                resizedVisualization,
+            cv::imshow(
+                WINDOW_NAME,
                 combined
             );
 
-            cv::imshow("AdaptivePerception", combined);
+            // Process GTK2 window events.
+            const int key = cv::waitKey(1);
 
-            if (cv::waitKey(1) == 27) {
+            // ESC closes the application.
+            if (key == 27) {
+                running = false;
                 break;
             }
+
+            // Check for the X-button close event.
+            // This check must happen before the next imshow().
+            if (isWindowClosed()) {
+
+                std::cout << "Window closed by user."
+                          << std::endl;
+
+                running = false;
+                break;
+            }
+
+            ++frameIndex;
         }
 
         cap.release();
+
         cv::destroyAllWindows();
 
-        std::cout << "AdaptivePerception stopped!" << std::endl;
+        std::cout << "AdaptivePerception stopped!"
+                  << std::endl;
 
     }
     catch (const std::exception& e) {
 
-        std::cerr << "Error: " << e.what() << std::endl;
+        cv::destroyAllWindows();
+
+        std::cerr << "Error: "
+                  << e.what()
+                  << std::endl;
+
         return 1;
     }
 

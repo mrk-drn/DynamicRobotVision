@@ -34,7 +34,7 @@ constexpr int MASK_SIZE =
     MASK_WIDTH * MASK_HEIGHT;
 
 constexpr float CONFIDENCE_THRESHOLD = 0.05f;
-constexpr float MASK_THRESHOLD = 0.5f;
+constexpr float MASK_THRESHOLD = 0.6f;
 constexpr float MASK_OPACITY = 0.5f;
 
 constexpr float NMS_THRESHOLD = 0.90f;

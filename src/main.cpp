@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -10,7 +9,6 @@
 #include <opencv2/opencv.hpp>
 
 #include "core/PredictionManager.hpp"
-#include "estimators/MotionEstimator.hpp"
 #include "estimators/DepthEstimator.hpp"
 #include "estimators/SegmentationEstimator.hpp"
 #include "estimators/ObjectDetectionEstimator.hpp"
@@ -23,15 +21,17 @@ constexpr double TARGET_FPS = 15.0;
 constexpr int OUTPUT_WIDTH = 1280;
 constexpr int OUTPUT_HEIGHT = 720;
 
-constexpr float CLOSE_DISTANCE_THRESHOLD = 3.0f;
+constexpr float CLOSE_DISTANCE_THRESHOLD = 2.75f;
 
 const std::string WINDOW_NAME = "AdaptivePerception";
+
 
 cv::Mat fitToCanvas(
     const cv::Mat& source,
     const cv::Size& canvasSize,
     const cv::Scalar& background = cv::Scalar(25, 25, 25)
 ) {
+
     cv::Mat canvas(
         canvasSize,
         CV_8UC3,
@@ -78,11 +78,13 @@ cv::Mat fitToCanvas(
     return canvas;
 }
 
+
 cv::Mat createOutput(
     const cv::Mat& frame,
     const cv::Mat& prediction,
     const std::string& label
 ) {
+
     constexpr int PANEL_GAP = 4;
 
     const int panelWidth =
@@ -145,8 +147,11 @@ cv::Mat createOutput(
     return output;
 }
 
+
 bool isWindowClosed() {
+
     try {
+
         const double property = cv::getWindowProperty(
             WINDOW_NAME,
             cv::WND_PROP_AUTOSIZE
@@ -155,11 +160,13 @@ bool isWindowClosed() {
         return property < 0.0;
     }
     catch (const cv::Exception&) {
+
         return true;
     }
 }
 
 }
+
 
 int main(int argc, char* argv[]) {
 
@@ -167,6 +174,9 @@ int main(int argc, char* argv[]) {
 
         std::cout << "AdaptivePerception started!"
                   << std::endl;
+
+
+        // Video input
 
         cv::VideoCapture cap;
 
@@ -188,14 +198,19 @@ int main(int argc, char* argv[]) {
         }
 
         if (!cap.isOpened()) {
+
             throw std::runtime_error(
                 "Could not open video source."
             );
         }
 
+
+        // Prediction scheduling
+
         double videoFPS = cap.get(cv::CAP_PROP_FPS);
 
         if (!std::isfinite(videoFPS) || videoFPS <= 0.0) {
+
             videoFPS = TARGET_FPS;
 
             std::cout
@@ -207,19 +222,6 @@ int main(int argc, char* argv[]) {
         const double framesPerPrediction =
             videoFPS / TARGET_FPS;
 
-        std::cout << "Video FPS: "
-                  << videoFPS << std::endl;
-
-        std::cout << "Target prediction FPS: "
-                  << TARGET_FPS << std::endl;
-
-        std::cout << "Average frames per prediction: "
-                  << framesPerPrediction << std::endl;
-
-        // Motion estimator
-
-        MotionEstimator motionEstimator;
-        motionEstimator.setThreshold(5.0);
 
         // Prediction manager
 
@@ -243,6 +245,7 @@ int main(int argc, char* argv[]) {
             )
         );
 
+
         // Get depth estimator
 
         auto* depthEstimator =
@@ -253,10 +256,12 @@ int main(int argc, char* argv[]) {
             );
 
         if (!depthEstimator) {
+
             throw std::runtime_error(
                 "Depth estimator not registered."
             );
         }
+
 
         // Initialize window
 
@@ -271,6 +276,9 @@ int main(int argc, char* argv[]) {
             OUTPUT_HEIGHT
         );
 
+
+        // Main loop variables
+
         cv::Mat frame;
         cv::Mat cachedVisualization;
 
@@ -278,9 +286,16 @@ int main(int argc, char* argv[]) {
             "Waiting for prediction...";
 
         long long frameIndex = 0;
+
         double nextPredictionFrame = 0.0;
 
+        // Counts predictions, not frames.
+        long long predictionCount = 0;
+
         bool running = true;
+
+
+        // Main loop
 
         while (running) {
 
@@ -288,104 +303,92 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            // Preserve original prediction scheduling.
+
+            // Check prediction schedule
 
             const bool runPrediction =
                 static_cast<double>(frameIndex) + 1e-9 >=
                 nextPredictionFrame;
 
+
             if (runPrediction) {
 
                 nextPredictionFrame += framesPerPrediction;
 
-                const MotionState motionState =
-                    motionEstimator.estimateMotion(frame);
+                ++predictionCount;
 
-                bool showSegmentation = false;
-                bool showObjectDetection = false;
 
-                // MODE 1: Motion detected -> Depth estimation.
+                // Every odd prediction: DEPTH
 
-                if (motionState == MotionState::MOVING) {
+                if (predictionCount % 2 == 1) {
 
                     predictionManager.runPrediction(
                         PredictionType::DEPTH,
                         frame
                     );
-                }
-
-                // MODE 2: No motion -> Check nearest distance.
-
-                else if (depthEstimator->hasResult()) {
-
-                    const float nearestDistance =
-                        depthEstimator->nearestDistanceMeters();
-
-                    if (nearestDistance >= 0.0f) {
-
-                        // Close object -> Segmentation.
-
-                        if (
-                            nearestDistance <
-                            CLOSE_DISTANCE_THRESHOLD
-                        ) {
-
-                            predictionManager.runPrediction(
-                                PredictionType::SEGMENTATION,
-                                frame
-                            );
-
-                            showSegmentation = true;
-                        }
-
-                        // Distant object -> Object detection.
-
-                        else {
-
-                            predictionManager.runPrediction(
-                                PredictionType::OBJECT_DETECTION,
-                                frame
-                            );
-
-                            showObjectDetection = true;
-                        }
-                    }
-                }
-
-                // Select visualization.
-
-                if (showSegmentation) {
-
-                    cachedVisualization =
-                        predictionManager.getVisualization(
-                            PredictionType::SEGMENTATION
-                        );
-
-                    cachedLabel = "Segmentation";
-                }
-
-                else if (showObjectDetection) {
-
-                    cachedVisualization =
-                        predictionManager.getVisualization(
-                            PredictionType::OBJECT_DETECTION
-                        );
-
-                    cachedLabel = "Object Detection";
-                }
-
-                else {
 
                     cachedVisualization =
                         predictionManager.getVisualization(
                             PredictionType::DEPTH
                         );
 
-                    cachedLabel =
-                        motionState == MotionState::MOVING
-                        ? "Depth"
-                        : "Depth (Cached)";
+                    cachedLabel = "Depth";
                 }
+
+
+                // Every even prediction:
+                // SEGMENTATION or OBJECT DETECTION
+
+                else {
+
+                    const float nearestDistance =
+                        depthEstimator->hasResult()
+                        ? depthEstimator->nearestDistanceMeters()
+                        : -1.0f;
+
+
+                    // Close object: SEGMENTATION
+
+                    if (
+                        nearestDistance >= 0.0f &&
+                        nearestDistance < CLOSE_DISTANCE_THRESHOLD
+                    ) {
+
+                        predictionManager.runPrediction(
+                            PredictionType::SEGMENTATION,
+                            frame
+                        );
+
+                        cachedVisualization =
+                            predictionManager.getVisualization(
+                                PredictionType::SEGMENTATION
+                            );
+
+                        cachedLabel = "Segmentation";
+                    }
+
+
+                    // Distant object or invalid depth:
+                    // OBJECT DETECTION
+
+                    else {
+
+                        predictionManager.runPrediction(
+                            PredictionType::OBJECT_DETECTION,
+                            frame
+                        );
+
+                        cachedVisualization =
+                            predictionManager.getVisualization(
+                                PredictionType::OBJECT_DETECTION
+                            );
+
+                        cachedLabel = "Object Detection";
+                    }
+                }
+
+
+                // Visualization fallback
 
                 if (cachedVisualization.empty()) {
 
@@ -399,7 +402,8 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // Display.
+
+            // Display
 
             cv::Mat combined = createOutput(
                 frame,
@@ -412,12 +416,15 @@ int main(int argc, char* argv[]) {
                 combined
             );
 
+
             const int key = cv::waitKey(1);
 
             if (key == 27) {
+
                 running = false;
                 break;
             }
+
 
             if (isWindowClosed()) {
 
@@ -428,10 +435,15 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
+
             ++frameIndex;
         }
 
+
+        // Cleanup
+
         cap.release();
+
         cv::destroyAllWindows();
 
         std::cout << "AdaptivePerception stopped!"

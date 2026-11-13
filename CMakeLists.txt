@@ -61,6 +61,7 @@ set(SOURCES
     src/estimators/MotionEstimator.cpp
     src/estimators/DepthEstimator.cpp
     src/estimators/SegmentationEstimator.cpp
+    src/estimators/ObjectDetectionEstimator.cpp
 
     # Visualization
     src/visualization/Visualizer.cpp

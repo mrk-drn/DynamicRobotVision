@@ -1,3 +1,4 @@
+
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "estimators/MotionEstimator.hpp"
 #include "estimators/DepthEstimator.hpp"
 #include "estimators/SegmentationEstimator.hpp"
+#include "estimators/ObjectDetectionEstimator.hpp"
 #include "visualization/Visualizer.hpp"
 
 namespace {
@@ -105,10 +107,7 @@ cv::Mat createOutput(
 
     originalPanel.copyTo(
         output(cv::Rect(
-            0,
-            0,
-            panelWidth,
-            OUTPUT_HEIGHT
+            0, 0, panelWidth, OUTPUT_HEIGHT
         ))
     );
 
@@ -146,7 +145,6 @@ cv::Mat createOutput(
     return output;
 }
 
-// Check whether the GTK2 window still exists.
 bool isWindowClosed() {
     try {
         const double property = cv::getWindowProperty(
@@ -218,8 +216,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Average frames per prediction: "
                   << framesPerPrediction << std::endl;
 
+        // Motion estimator
+
         MotionEstimator motionEstimator;
-        motionEstimator.setThreshold(15.0);
+        motionEstimator.setThreshold(5.0);
+
+        // Prediction manager
 
         PredictionManager predictionManager;
 
@@ -235,6 +237,14 @@ int main(int argc, char* argv[]) {
             )
         );
 
+        predictionManager.addPrediction(
+            std::make_unique<ObjectDetectionEstimator>(
+                "models/yolo26n-detect.onnx"
+            )
+        );
+
+        // Get depth estimator
+
         auto* depthEstimator =
             dynamic_cast<DepthEstimator*>(
                 predictionManager.getPrediction(
@@ -247,6 +257,8 @@ int main(int argc, char* argv[]) {
                 "Depth estimator not registered."
             );
         }
+
+        // Initialize window
 
         cv::namedWindow(
             WINDOW_NAME,
@@ -262,7 +274,8 @@ int main(int argc, char* argv[]) {
         cv::Mat frame;
         cv::Mat cachedVisualization;
 
-        std::string cachedLabel = "Waiting for prediction...";
+        std::string cachedLabel =
+            "Waiting for prediction...";
 
         long long frameIndex = 0;
         double nextPredictionFrame = 0.0;
@@ -274,6 +287,8 @@ int main(int argc, char* argv[]) {
             if (!cap.read(frame) || frame.empty()) {
                 break;
             }
+
+            // Preserve original prediction scheduling.
 
             const bool runPrediction =
                 static_cast<double>(frameIndex) + 1e-9 >=
@@ -287,6 +302,9 @@ int main(int argc, char* argv[]) {
                     motionEstimator.estimateMotion(frame);
 
                 bool showSegmentation = false;
+                bool showObjectDetection = false;
+
+                // MODE 1: Motion detected -> Depth estimation.
 
                 if (motionState == MotionState::MOVING) {
 
@@ -295,24 +313,46 @@ int main(int argc, char* argv[]) {
                         frame
                     );
                 }
+
+                // MODE 2: No motion -> Check nearest distance.
+
                 else if (depthEstimator->hasResult()) {
 
                     const float nearestDistance =
                         depthEstimator->nearestDistanceMeters();
 
-                    if (
-                        nearestDistance >= 0.0f &&
-                        nearestDistance < CLOSE_DISTANCE_THRESHOLD
-                    ) {
+                    if (nearestDistance >= 0.0f) {
 
-                        predictionManager.runPrediction(
-                            PredictionType::SEGMENTATION,
-                            frame
-                        );
+                        // Close object -> Segmentation.
 
-                        showSegmentation = true;
+                        if (
+                            nearestDistance <
+                            CLOSE_DISTANCE_THRESHOLD
+                        ) {
+
+                            predictionManager.runPrediction(
+                                PredictionType::SEGMENTATION,
+                                frame
+                            );
+
+                            showSegmentation = true;
+                        }
+
+                        // Distant object -> Object detection.
+
+                        else {
+
+                            predictionManager.runPrediction(
+                                PredictionType::OBJECT_DETECTION,
+                                frame
+                            );
+
+                            showObjectDetection = true;
+                        }
                     }
                 }
+
+                // Select visualization.
 
                 if (showSegmentation) {
 
@@ -323,6 +363,17 @@ int main(int argc, char* argv[]) {
 
                     cachedLabel = "Segmentation";
                 }
+
+                else if (showObjectDetection) {
+
+                    cachedVisualization =
+                        predictionManager.getVisualization(
+                            PredictionType::OBJECT_DETECTION
+                        );
+
+                    cachedLabel = "Object Detection";
+                }
+
                 else {
 
                     cachedVisualization =
@@ -348,6 +399,8 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // Display.
+
             cv::Mat combined = createOutput(
                 frame,
                 cachedVisualization,
@@ -359,17 +412,13 @@ int main(int argc, char* argv[]) {
                 combined
             );
 
-            // Process GTK2 window events.
             const int key = cv::waitKey(1);
 
-            // ESC closes the application.
             if (key == 27) {
                 running = false;
                 break;
             }
 
-            // Check for the X-button close event.
-            // This check must happen before the next imshow().
             if (isWindowClosed()) {
 
                 std::cout << "Window closed by user."
@@ -383,7 +432,6 @@ int main(int argc, char* argv[]) {
         }
 
         cap.release();
-
         cv::destroyAllWindows();
 
         std::cout << "AdaptivePerception stopped!"

@@ -37,8 +37,8 @@ private:
     Ort::Env env;
     Ort::Session session;
 
-    const int inputWidth = 640;
-    const int inputHeight = 640;
+    const int inputWidth = 768; //640;
+    const int inputHeight = 768; //640;
 
     cv::Mat depthResult_;
 };

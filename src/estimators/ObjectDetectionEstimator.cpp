@@ -16,7 +16,7 @@ constexpr int NUM_CLASSES = 80;
 constexpr int NUM_DETECTIONS = 300;
 constexpr int NUM_VALUES = 6;
 
-constexpr float CONFIDENCE_THRESHOLD = 0.05f;
+constexpr float CONFIDENCE_THRESHOLD = 0.20f;
 constexpr float NMS_THRESHOLD = 0.45f;
 
 const std::array<std::string, NUM_CLASSES> CLASS_NAMES = {

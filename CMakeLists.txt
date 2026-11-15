@@ -7,7 +7,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# OpenCV with CUDA modules
+find_package(Eigen3 3.4 REQUIRED NO_MODULE)
+
 find_package(OpenCV REQUIRED COMPONENTS
     core
     imgproc
@@ -22,79 +23,100 @@ find_package(OpenCV REQUIRED COMPONENTS
 )
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
-message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
 
-# ONNX Runtime
+find_package(OpenGL REQUIRED)
+find_package(glfw3 REQUIRED)
+find_package(GLEW REQUIRED)
+
+find_package(VTK REQUIRED COMPONENTS
+    CommonCore
+    CommonDataModel
+    FiltersCore
+    RenderingCore
+    RenderingOpenGL2
+)
+
+message(STATUS "VTK version: ${VTK_VERSION}")
+
 set(ONNXRUNTIME_ROOT
     "${PROJECT_SOURCE_DIR}/third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1"
 )
 
-find_library(
-    ONNXRUNTIME_LIBRARY
+find_path(ONNXRUNTIME_INCLUDE_DIR
+    onnxruntime_cxx_api.h
+    PATHS "${ONNXRUNTIME_ROOT}/include"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+find_library(ONNXRUNTIME_LIBRARY
     NAMES onnxruntime
     PATHS "${ONNXRUNTIME_ROOT}/lib"
     NO_DEFAULT_PATH
     REQUIRED
 )
 
-# cuDNN
+add_library(ONNXRuntime::ONNXRuntime SHARED IMPORTED)
+
+set_target_properties(ONNXRuntime::ONNXRuntime PROPERTIES
+    IMPORTED_LOCATION "${ONNXRUNTIME_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
+)
+
 set(CUDNN_ROOT
     "${PROJECT_SOURCE_DIR}/third_party/cudnn"
 )
 
-find_library(
-    CUDNN_LIBRARY
+find_path(CUDNN_INCLUDE_DIR
+    cudnn.h
+    PATHS "${CUDNN_ROOT}/include"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+find_library(CUDNN_LIBRARY
     NAMES cudnn
     PATHS "${CUDNN_ROOT}/lib"
     NO_DEFAULT_PATH
     REQUIRED
 )
 
-# Source files
 set(SOURCES
     src/main.cpp
-
-    # Core
     src/core/PredictionManager.cpp
-
-    # Estimators
     src/estimators/MotionEstimator.cpp
     src/estimators/DepthEstimator.cpp
     src/estimators/SegmentationEstimator.cpp
     src/estimators/ObjectDetectionEstimator.cpp
-
-    # Visualization
     src/visualization/Visualizer.cpp
+    src/visualization/PointCloudVisualizer.cpp
 )
 
-# Application
-add_executable(AdaptiveRobotVision
-    ${SOURCES}
-)
+add_executable(AdaptiveRobotVision ${SOURCES})
 
-# Include directories
 target_include_directories(AdaptiveRobotVision PRIVATE
     ${OpenCV_INCLUDE_DIRS}
     ${PROJECT_SOURCE_DIR}/include
-    ${ONNXRUNTIME_ROOT}/include
-    ${CUDNN_ROOT}/include
+    ${CUDNN_INCLUDE_DIR}
 )
 
-# Link libraries
 target_link_libraries(AdaptiveRobotVision PRIVATE
+    Eigen3::Eigen
     ${OpenCV_LIBS}
-    ${ONNXRUNTIME_LIBRARY}
+    ONNXRuntime::ONNXRuntime
     ${CUDNN_LIBRARY}
+    OpenGL::GL
+    glfw
+    GLEW::GLEW
+    ${VTK_LIBRARIES}
 )
 
-# Compiler options
 target_compile_options(AdaptiveRobotVision PRIVATE
-    -O3
     -Wall
     -Wextra
+    -fno-omit-frame-pointer
 )
 
-# Runtime library paths
 set_target_properties(AdaptiveRobotVision PROPERTIES
     BUILD_RPATH
     "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib;$ORIGIN/../third_party/cudnn/lib;/usr/local/cuda/targets/x86_64-linux/lib"
@@ -103,4 +125,9 @@ set_target_properties(AdaptiveRobotVision PROPERTIES
     "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib;$ORIGIN/../third_party/cudnn/lib;/usr/local/cuda/targets/x86_64-linux/lib"
 
     BUILD_RPATH_USE_ORIGIN TRUE
+)
+
+vtk_module_autoinit(
+    TARGETS AdaptiveRobotVision
+    MODULES ${VTK_LIBRARIES}
 )

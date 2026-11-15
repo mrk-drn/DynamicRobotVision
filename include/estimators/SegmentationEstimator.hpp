@@ -10,13 +10,23 @@
 
 class SegmentationEstimator : public Prediction {
 public:
-    explicit SegmentationEstimator(const std::string& modelPath);
+    explicit SegmentationEstimator(
+        const std::string& modelPath
+    );
 
     PredictionType type() const override;
-    void predict(const cv::Mat& frame) override;
+
+    void predict(
+        const cv::Mat& frame
+    ) override;
+
     cv::Mat visualize() const override;
+
     bool hasResult() const override;
+
     std::string name() const override;
+
+    cv::Mat getSegmentationMask() const;
 
 private:
     static constexpr int inputWidth = 640;
@@ -26,4 +36,6 @@ private:
     Ort::Session session;
 
     cv::Mat visualization_;
+
+    cv::Mat segmentationMask_;
 };

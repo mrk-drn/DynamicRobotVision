@@ -1,3 +1,4 @@
+
 #include "estimators/DepthEstimator.hpp"
 
 #include <iostream>
@@ -7,7 +8,6 @@
 #include <cmath>
 #include <array>
 
-
 DepthEstimator::DepthEstimator(const std::string& modelPath)
     : env(ORT_LOGGING_LEVEL_WARNING, "AdaptivePerception"),
       session(nullptr)
@@ -16,7 +16,6 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
               << modelPath << std::endl;
 
     // Verify CUDA provider.
-
     const auto providers = Ort::GetAvailableProviders();
 
     const bool cudaAvailable =
@@ -33,7 +32,6 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
     }
 
     // Configure ONNX Runtime.
-
     Ort::SessionOptions sessionOptions;
 
     sessionOptions.SetGraphOptimizationLevel(
@@ -45,7 +43,6 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
     );
 
     sessionOptions.SetIntraOpNumThreads(1);
-
     sessionOptions.SetInterOpNumThreads(1);
 
     OrtCUDAProviderOptions cudaOptions{};
@@ -57,7 +54,6 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
     );
 
     // Load model.
-
     session = Ort::Session(
         env,
         modelPath.c_str(),
@@ -65,7 +61,6 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
     );
 
     // Cache tensor names.
-
     Ort::AllocatorWithDefaultOptions allocator;
 
     auto inputNameAllocated =
@@ -84,26 +79,15 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
               << std::endl;
 }
 
-
-// --------------------------------------------------
-// Prediction
-// --------------------------------------------------
-
-void DepthEstimator::predict(const cv::Mat& frame) {
-
+void DepthEstimator::predict(const cv::Mat& frame)
+{
     if (frame.empty()) {
-
         depthResult_.release();
         depthVisualization_.release();
-
         return;
     }
 
-
-    // --------------------------------------------------
-    // Letterbox preprocessing
-    // --------------------------------------------------
-
+    // Letterbox preprocessing.
     const double scale = std::min(
         static_cast<double>(inputWidth) / frame.cols,
         static_cast<double>(inputHeight) / frame.rows
@@ -114,9 +98,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
 
     const int resizedHeight =
         static_cast<int>(std::round(frame.rows * scale));
-
-
-    // Correct padding calculations.
 
     const int padLeft =
         (inputWidth - resizedWidth) / 2;
@@ -130,7 +111,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
     const int padBottom =
         inputHeight - resizedHeight - padTop;
 
-
     cv::Mat resized;
 
     cv::resize(
@@ -141,7 +121,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         0,
         cv::INTER_LINEAR
     );
-
 
     cv::Mat letterboxed;
 
@@ -156,9 +135,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         cv::Scalar(114, 114, 114)
     );
 
-
     // Validate preprocessing dimensions.
-
     if (
         letterboxed.cols != inputWidth ||
         letterboxed.rows != inputHeight
@@ -168,11 +145,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         );
     }
 
-
-    // --------------------------------------------------
-    // Prepare input tensor
-    // --------------------------------------------------
-
+    // Prepare input tensor.
     cv::Mat blob = cv::dnn::blobFromImage(
         letterboxed,
         1.0 / 255.0,
@@ -183,7 +156,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         CV_32F
     );
 
-
     const std::array<int64_t, 4> inputShape = {
         1,
         3,
@@ -191,13 +163,11 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         inputWidth
     };
 
-
     Ort::MemoryInfo memoryInfo =
         Ort::MemoryInfo::CreateCpu(
             OrtArenaAllocator,
             OrtMemTypeDefault
         );
-
 
     Ort::Value inputTensor =
         Ort::Value::CreateTensor<float>(
@@ -208,11 +178,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
             inputShape.size()
         );
 
-
-    // --------------------------------------------------
-    // Run ONNX inference on CUDA
-    // --------------------------------------------------
-
+    // Run ONNX inference on CUDA.
     const char* inputNames[] = {
         inputName_.c_str()
     };
@@ -220,7 +186,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
     const char* outputNames[] = {
         outputName_.c_str()
     };
-
 
     auto outputTensors = session.Run(
         Ort::RunOptions{nullptr},
@@ -231,11 +196,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         1
     );
 
-
-    // --------------------------------------------------
-    // Validate model output
-    // --------------------------------------------------
-
+    // Validate model output.
     auto& outputTensor = outputTensors.front();
 
     auto outputInfo =
@@ -257,14 +218,9 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         );
     }
 
-
-    // --------------------------------------------------
-    // Access output without cloning
-    // --------------------------------------------------
-
+    // Access output without cloning.
     const float* outputData =
         outputTensor.GetTensorData<float>();
-
 
     cv::Mat depthModel(
         inputHeight,
@@ -273,11 +229,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         const_cast<float*>(outputData)
     );
 
-
-    // --------------------------------------------------
-    // Remove letterbox padding
-    // --------------------------------------------------
-
+    // Remove letterbox padding.
     const cv::Rect validRegion(
         padLeft,
         padTop,
@@ -285,15 +237,10 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         resizedHeight
     );
 
-
     cv::Mat croppedDepth =
         depthModel(validRegion);
 
-
-    // --------------------------------------------------
-    // Restore original frame dimensions
-    // --------------------------------------------------
-
+    // Restore original frame dimensions.
     cv::resize(
         croppedDepth,
         depthResult_,
@@ -303,11 +250,7 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         cv::INTER_LINEAR
     );
 
-
-    // --------------------------------------------------
-    // Generate grayscale visualization
-    // --------------------------------------------------
-
+    // Generate grayscale visualization.
     cv::Mat normalized;
 
     cv::normalize(
@@ -319,7 +262,6 @@ void DepthEstimator::predict(const cv::Mat& frame) {
         CV_8UC1
     );
 
-
     cv::cvtColor(
         normalized,
         depthVisualization_,
@@ -327,13 +269,8 @@ void DepthEstimator::predict(const cv::Mat& frame) {
     );
 }
 
-
-// --------------------------------------------------
-// Visualization
-// --------------------------------------------------
-
-cv::Mat DepthEstimator::visualize() const {
-
+cv::Mat DepthEstimator::visualize() const
+{
     if (depthVisualization_.empty()) {
         return {};
     }
@@ -341,33 +278,18 @@ cv::Mat DepthEstimator::visualize() const {
     return depthVisualization_.clone();
 }
 
-
-// --------------------------------------------------
-// Result availability
-// --------------------------------------------------
-
-bool DepthEstimator::hasResult() const {
-
+bool DepthEstimator::hasResult() const
+{
     return !depthResult_.empty();
 }
 
-
-// --------------------------------------------------
-// Raw depth access
-// --------------------------------------------------
-
-const cv::Mat& DepthEstimator::getDepth() const {
-
+const cv::Mat& DepthEstimator::getDepth() const
+{
     return depthResult_;
 }
 
-
-// --------------------------------------------------
-// Nearest distance estimation
-// --------------------------------------------------
-
-float DepthEstimator::nearestDistanceMeters() const {
-
+float DepthEstimator::nearestDistanceMeters() const
+{
     if (
         depthResult_.empty() ||
         depthResult_.type() != CV_32F
@@ -375,21 +297,16 @@ float DepthEstimator::nearestDistanceMeters() const {
         return -1.0f;
     }
 
-
     // Reuse allocated memory between calls.
-
     static thread_local std::vector<float> values;
 
     values.clear();
 
     if (values.capacity() < depthResult_.total()) {
-
         values.reserve(depthResult_.total());
     }
 
-
     // Collect valid depth values.
-
     for (int y = 0; y < depthResult_.rows; ++y) {
 
         const float* row =
@@ -408,14 +325,11 @@ float DepthEstimator::nearestDistanceMeters() const {
         }
     }
 
-
     if (values.empty()) {
         return -1.0f;
     }
 
-
     // Calculate 5th percentile.
-
     const size_t index = values.size() / 20;
 
     std::nth_element(
@@ -423,7 +337,6 @@ float DepthEstimator::nearestDistanceMeters() const {
         values.begin() + index,
         values.end()
     );
-
 
     return values[index];
 }

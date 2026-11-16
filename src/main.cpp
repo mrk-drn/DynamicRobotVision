@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
-#include <thread>
 
 #include <opencv2/opencv.hpp>
 
@@ -20,7 +19,6 @@
 namespace
 {
 
-constexpr double PROCESSING_FPS = 30.0;
 constexpr double PREDICTION_FPS = 15.0;
 
 constexpr int OUTPUT_WIDTH = 1280;
@@ -38,16 +36,10 @@ constexpr int POINT_CLOUD_SAMPLING_STEP = 10;
 constexpr int MASK_THRESHOLD = 12;
 constexpr int MIN_MASK_PIXELS = 30;
 
-const std::string WINDOW_NAME = "AdaptiveRobotPerception";
+const std::string WINDOW_NAME =
+    "AdaptiveRobotPerception";
 
 using Clock = std::chrono::steady_clock;
-
-const auto PROCESSING_INTERVAL =
-    std::chrono::duration_cast<Clock::duration>(
-        std::chrono::duration<double>(
-            1.0 / PROCESSING_FPS
-        )
-    );
 
 const auto PREDICTION_INTERVAL =
     std::chrono::duration_cast<Clock::duration>(
@@ -97,7 +89,10 @@ cv::Mat fitToCanvas(
 
     if (converted.type() != CV_8UC3)
     {
-        converted.convertTo(converted, CV_8UC3);
+        converted.convertTo(
+            converted,
+            CV_8UC3
+        );
     }
 
     const double scale = std::min(
@@ -107,12 +102,16 @@ cv::Mat fitToCanvas(
 
     const int width = std::max(
         1,
-        static_cast<int>(std::round(converted.cols * scale))
+        static_cast<int>(
+            std::round(converted.cols * scale)
+        )
     );
 
     const int height = std::max(
         1,
-        static_cast<int>(std::round(converted.rows * scale))
+        static_cast<int>(
+            std::round(converted.rows * scale)
+        )
     );
 
     cv::Mat resized;
@@ -126,11 +125,19 @@ cv::Mat fitToCanvas(
         cv::INTER_LINEAR
     );
 
-    const int x = (canvasSize.width - width) / 2;
-    const int y = (canvasSize.height - height) / 2;
+    const int x =
+        (canvasSize.width - width) / 2;
+
+    const int y =
+        (canvasSize.height - height) / 2;
 
     resized.copyTo(
-        canvas(cv::Rect(x, y, width, height))
+        canvas(cv::Rect(
+            x,
+            y,
+            width,
+            height
+        ))
     );
 
     return canvas;
@@ -178,10 +185,11 @@ cv::Mat createForegroundMask(
 
     if (predictionType == "Object Detection")
     {
-        cv::Mat kernel = cv::getStructuringElement(
-            cv::MORPH_RECT,
-            cv::Size(9, 9)
-        );
+        cv::Mat kernel =
+            cv::getStructuringElement(
+                cv::MORPH_RECT,
+                cv::Size(9, 9)
+            );
 
         cv::morphologyEx(
             mask,
@@ -199,10 +207,11 @@ cv::Mat createForegroundMask(
             cv::CHAIN_APPROX_SIMPLE
         );
 
-        cv::Mat filled = cv::Mat::zeros(
-            mask.size(),
-            CV_8UC1
-        );
+        cv::Mat filled =
+            cv::Mat::zeros(
+                mask.size(),
+                CV_8UC1
+            );
 
         for (const auto& contour : contours)
         {
@@ -211,7 +220,9 @@ cv::Mat createForegroundMask(
 
             cv::drawContours(
                 filled,
-                std::vector<std::vector<cv::Point>>{contour},
+                std::vector<std::vector<cv::Point>>{
+                    contour
+                },
                 0,
                 cv::Scalar(255),
                 cv::FILLED
@@ -222,10 +233,11 @@ cv::Mat createForegroundMask(
     }
     else
     {
-        cv::Mat kernel = cv::getStructuringElement(
-            cv::MORPH_ELLIPSE,
-            cv::Size(3, 3)
-        );
+        cv::Mat kernel =
+            cv::getStructuringElement(
+                cv::MORPH_ELLIPSE,
+                cv::Size(3, 3)
+            );
 
         cv::morphologyEx(
             mask,
@@ -318,7 +330,10 @@ cv::Mat createOutput(
     cv::putText(
         output,
         "Inference",
-        cv::Point(panelWidth + PANEL_GAP + 15, 30),
+        cv::Point(
+            panelWidth + PANEL_GAP + 15,
+            30
+        ),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
         cv::Scalar(255, 255, 255),
@@ -329,7 +344,10 @@ cv::Mat createOutput(
     cv::putText(
         output,
         "3D Reconstruction",
-        cv::Point(2 * (panelWidth + PANEL_GAP) + 15, 30),
+        cv::Point(
+            2 * (panelWidth + PANEL_GAP) + 15,
+            30
+        ),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
         cv::Scalar(255, 255, 255),
@@ -368,16 +386,12 @@ int main(int argc, char* argv[])
             << std::endl;
 
         std::cout
-            << "General processing: "
-            << PROCESSING_FPS
-            << " FPS"
-            << std::endl;
-
-        std::cout
             << "Prediction: "
             << PREDICTION_FPS
             << " FPS"
             << std::endl;
+
+        // Camera initialization.
 
         cv::VideoCapture cap;
 
@@ -392,6 +406,8 @@ int main(int argc, char* argv[])
                 "Could not open video source."
             );
         }
+
+        // Prediction manager.
 
         PredictionManager predictionManager;
 
@@ -427,6 +443,8 @@ int main(int argc, char* argv[])
             );
         }
 
+        // Point cloud visualizer.
+
         PointCloudVisualizer pointCloudVisualizer(
             CAMERA_FX,
             CAMERA_FY,
@@ -437,6 +455,8 @@ int main(int argc, char* argv[])
         pointCloudVisualizer.setSamplingStep(
             POINT_CLOUD_SAMPLING_STEP
         );
+
+        // Window initialization.
 
         cv::namedWindow(
             WINDOW_NAME,
@@ -449,6 +469,8 @@ int main(int argc, char* argv[])
             OUTPUT_HEIGHT
         );
 
+        // Frame buffers.
+
         cv::Mat frame;
 
         cv::Mat cachedVisualization;
@@ -460,27 +482,18 @@ int main(int argc, char* argv[])
 
         bool running = true;
 
-        auto nextProcessingTime = Clock::now();
         auto nextPredictionTime = Clock::now();
+
+        // Main processing loop.
 
         while (running)
         {
-            const auto now = Clock::now();
-
-            if (now < nextProcessingTime)
-            {
-                std::this_thread::sleep_until(
-                    nextProcessingTime
-                );
-            }
-
-            const auto processingStart = Clock::now();
-
-            nextProcessingTime =
-                processingStart + PROCESSING_INTERVAL;
+            // Read camera as fast as possible.
 
             if (!cap.read(frame) || frame.empty())
                 break;
+
+            // Prediction scheduling.
 
             const auto predictionNow = Clock::now();
 
@@ -490,6 +503,8 @@ int main(int argc, char* argv[])
                     predictionNow + PREDICTION_INTERVAL;
 
                 ++predictionCount;
+
+                // Alternate between depth and object perception.
 
                 if (predictionCount % 2 == 1)
                 {
@@ -511,6 +526,8 @@ int main(int argc, char* argv[])
                         : -1.0f;
 
                     std::string predictionType;
+
+                    // Adaptive segmentation / detection.
 
                     if (
                         nearestDistance >= 0.0f &&
@@ -544,6 +561,8 @@ int main(int argc, char* argv[])
                         predictionType = "Object Detection";
                     }
 
+                    // Update foreground mask.
+
                     cv::Mat newMask = createForegroundMask(
                         frame,
                         cachedVisualization,
@@ -563,6 +582,8 @@ int main(int argc, char* argv[])
                     }
                 }
 
+                // Ensure valid visualization.
+
                 if (cachedVisualization.empty())
                 {
                     cachedVisualization = cv::Mat(
@@ -572,6 +593,8 @@ int main(int argc, char* argv[])
                     );
                 }
             }
+
+            // Update point cloud as fast as possible.
 
             if (
                 depthEstimator->hasResult() &&
@@ -589,6 +612,8 @@ int main(int argc, char* argv[])
                     pointCloudVisualizer.getVisualization();
             }
 
+            // Compose visualization.
+
             cv::Mat combined = createOutput(
                 frame,
                 cachedVisualization,
@@ -599,6 +624,8 @@ int main(int argc, char* argv[])
                 WINDOW_NAME,
                 combined
             );
+
+            // Handle keyboard input.
 
             const int key = cv::waitKey(1);
 
@@ -618,6 +645,8 @@ int main(int argc, char* argv[])
                 break;
             }
         }
+
+        // Cleanup.
 
         cap.release();
 

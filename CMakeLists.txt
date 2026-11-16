@@ -24,6 +24,8 @@ find_package(OpenCV REQUIRED COMPONENTS
     cudaarithm
     cudaimgproc
     cudawarping
+    cudafeatures2d
+    cudaoptflow
 )
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
@@ -92,10 +94,14 @@ set(SOURCES
     src/core/PredictionManager.cpp
 
     src/estimators/MotionEstimator.cpp
+    src/estimators/MotionEstimatorKernels.cu
+
     src/estimators/DepthEstimator.cpp
     src/estimators/DepthKernels.cu
+
     src/estimators/SegmentationEstimator.cpp
     src/estimators/SegmentationKernels.cu
+
     src/estimators/ObjectDetectionEstimator.cpp
     src/estimators/ObjectDetectionKernels.cu
 

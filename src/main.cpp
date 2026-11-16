@@ -11,6 +11,7 @@
 
 #include "core/PredictionManager.hpp"
 #include "estimators/DepthEstimator.hpp"
+#include "estimators/MotionEstimator.hpp"
 #include "estimators/SegmentationEstimator.hpp"
 #include "estimators/ObjectDetectionEstimator.hpp"
 #include "visualization/Visualizer.hpp"
@@ -24,7 +25,7 @@ constexpr double PREDICTION_FPS = 15.0;
 constexpr int OUTPUT_WIDTH = 1280;
 constexpr int OUTPUT_HEIGHT = 720;
 
-constexpr float CLOSE_DISTANCE_THRESHOLD = 2.75f;
+constexpr double MOTION_THRESHOLD = 2.0;
 
 constexpr float CAMERA_FX = 600.0f;
 constexpr float CAMERA_FY = 600.0f;
@@ -89,10 +90,7 @@ cv::Mat fitToCanvas(
 
     if (converted.type() != CV_8UC3)
     {
-        converted.convertTo(
-            converted,
-            CV_8UC3
-        );
+        converted.convertTo(converted, CV_8UC3);
     }
 
     const double scale = std::min(
@@ -102,16 +100,12 @@ cv::Mat fitToCanvas(
 
     const int width = std::max(
         1,
-        static_cast<int>(
-            std::round(converted.cols * scale)
-        )
+        static_cast<int>(std::round(converted.cols * scale))
     );
 
     const int height = std::max(
         1,
-        static_cast<int>(
-            std::round(converted.rows * scale)
-        )
+        static_cast<int>(std::round(converted.rows * scale))
     );
 
     cv::Mat resized;
@@ -125,19 +119,11 @@ cv::Mat fitToCanvas(
         cv::INTER_LINEAR
     );
 
-    const int x =
-        (canvasSize.width - width) / 2;
-
-    const int y =
-        (canvasSize.height - height) / 2;
+    const int x = (canvasSize.width - width) / 2;
+    const int y = (canvasSize.height - height) / 2;
 
     resized.copyTo(
-        canvas(cv::Rect(
-            x,
-            y,
-            width,
-            height
-        ))
+        canvas(cv::Rect(x, y, width, height))
     );
 
     return canvas;
@@ -163,11 +149,7 @@ cv::Mat createForegroundMask(
     cv::Mat grayscale;
     cv::Mat mask;
 
-    cv::absdiff(
-        original,
-        prediction,
-        difference
-    );
+    cv::absdiff(original, prediction, difference);
 
     cv::cvtColor(
         difference,
@@ -185,11 +167,10 @@ cv::Mat createForegroundMask(
 
     if (predictionType == "Object Detection")
     {
-        cv::Mat kernel =
-            cv::getStructuringElement(
-                cv::MORPH_RECT,
-                cv::Size(9, 9)
-            );
+        cv::Mat kernel = cv::getStructuringElement(
+            cv::MORPH_RECT,
+            cv::Size(9, 9)
+        );
 
         cv::morphologyEx(
             mask,
@@ -207,11 +188,10 @@ cv::Mat createForegroundMask(
             cv::CHAIN_APPROX_SIMPLE
         );
 
-        cv::Mat filled =
-            cv::Mat::zeros(
-                mask.size(),
-                CV_8UC1
-            );
+        cv::Mat filled = cv::Mat::zeros(
+            mask.size(),
+            CV_8UC1
+        );
 
         for (const auto& contour : contours)
         {
@@ -220,9 +200,7 @@ cv::Mat createForegroundMask(
 
             cv::drawContours(
                 filled,
-                std::vector<std::vector<cv::Point>>{
-                    contour
-                },
+                std::vector<std::vector<cv::Point>>{contour},
                 0,
                 cv::Scalar(255),
                 cv::FILLED
@@ -233,11 +211,10 @@ cv::Mat createForegroundMask(
     }
     else
     {
-        cv::Mat kernel =
-            cv::getStructuringElement(
-                cv::MORPH_ELLIPSE,
-                cv::Size(3, 3)
-            );
+        cv::Mat kernel = cv::getStructuringElement(
+            cv::MORPH_ELLIPSE,
+            cv::Size(3, 3)
+        );
 
         cv::morphologyEx(
             mask,
@@ -267,20 +244,9 @@ cv::Mat createOutput(
         OUTPUT_HEIGHT
     );
 
-    cv::Mat originalPanel = fitToCanvas(
-        frame,
-        panelSize
-    );
-
-    cv::Mat predictionPanel = fitToCanvas(
-        prediction,
-        panelSize
-    );
-
-    cv::Mat pointCloudPanel = fitToCanvas(
-        pointCloud,
-        panelSize
-    );
+    cv::Mat originalPanel = fitToCanvas(frame, panelSize);
+    cv::Mat predictionPanel = fitToCanvas(prediction, panelSize);
+    cv::Mat pointCloudPanel = fitToCanvas(pointCloud, panelSize);
 
     cv::Mat output(
         OUTPUT_HEIGHT,
@@ -290,12 +256,7 @@ cv::Mat createOutput(
     );
 
     originalPanel.copyTo(
-        output(cv::Rect(
-            0,
-            0,
-            panelWidth,
-            OUTPUT_HEIGHT
-        ))
+        output(cv::Rect(0, 0, panelWidth, OUTPUT_HEIGHT))
     );
 
     predictionPanel.copyTo(
@@ -330,10 +291,7 @@ cv::Mat createOutput(
     cv::putText(
         output,
         "Inference",
-        cv::Point(
-            panelWidth + PANEL_GAP + 15,
-            30
-        ),
+        cv::Point(panelWidth + PANEL_GAP + 15, 30),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
         cv::Scalar(255, 255, 255),
@@ -344,10 +302,7 @@ cv::Mat createOutput(
     cv::putText(
         output,
         "3D Reconstruction",
-        cv::Point(
-            2 * (panelWidth + PANEL_GAP) + 15,
-            30
-        ),
+        cv::Point(2 * (panelWidth + PANEL_GAP) + 15, 30),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
         cv::Scalar(255, 255, 255),
@@ -443,6 +398,14 @@ int main(int argc, char* argv[])
             );
         }
 
+        // Motion estimator.
+
+        MotionEstimator motionEstimator;
+
+        motionEstimator.setThreshold(
+            MOTION_THRESHOLD
+        );
+
         // Point cloud visualizer.
 
         PointCloudVisualizer pointCloudVisualizer(
@@ -488,10 +451,13 @@ int main(int argc, char* argv[])
 
         while (running)
         {
-            // Read camera as fast as possible.
-
             if (!cap.read(frame) || frame.empty())
                 break;
+
+            // Estimate motion on every frame.
+
+            const MotionState motionState =
+                motionEstimator.estimateMotion(frame);
 
             // Prediction scheduling.
 
@@ -520,19 +486,11 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const float nearestDistance =
-                        depthEstimator->hasResult()
-                        ? depthEstimator->nearestDistanceMeters()
-                        : -1.0f;
-
                     std::string predictionType;
 
-                    // Adaptive segmentation / detection.
+                    // Adaptive segmentation / detection based on motion.
 
-                    if (
-                        nearestDistance >= 0.0f &&
-                        nearestDistance < CLOSE_DISTANCE_THRESHOLD
-                    )
+                    if (motionState == MotionState::MOVING)
                     {
                         predictionManager.runPrediction(
                             PredictionType::SEGMENTATION,
@@ -594,7 +552,7 @@ int main(int argc, char* argv[])
                 }
             }
 
-            // Update point cloud as fast as possible.
+            // Update point cloud.
 
             if (
                 depthEstimator->hasResult() &&

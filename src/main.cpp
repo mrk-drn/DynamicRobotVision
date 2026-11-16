@@ -1,3 +1,4 @@
+
 #include <iostream>
 #include <memory>
 #include <string>
@@ -34,9 +35,6 @@ constexpr float CAMERA_CY = 360.0f;
 
 constexpr int POINT_CLOUD_SAMPLING_STEP = 10;
 
-constexpr int MASK_THRESHOLD = 12;
-constexpr int MIN_MASK_PIXELS = 30;
-
 const std::string WINDOW_NAME =
     "AdaptiveRobotPerception";
 
@@ -48,7 +46,6 @@ const auto PREDICTION_INTERVAL =
             1.0 / PREDICTION_FPS
         )
     );
-
 
 cv::Mat fitToCanvas(
     const cv::Mat& source,
@@ -128,105 +125,6 @@ cv::Mat fitToCanvas(
 
     return canvas;
 }
-
-
-cv::Mat createForegroundMask(
-    const cv::Mat& original,
-    const cv::Mat& prediction,
-    const std::string& predictionType
-)
-{
-    if (
-        original.empty() ||
-        prediction.empty() ||
-        original.size() != prediction.size()
-    )
-    {
-        return {};
-    }
-
-    cv::Mat difference;
-    cv::Mat grayscale;
-    cv::Mat mask;
-
-    cv::absdiff(original, prediction, difference);
-
-    cv::cvtColor(
-        difference,
-        grayscale,
-        cv::COLOR_BGR2GRAY
-    );
-
-    cv::threshold(
-        grayscale,
-        mask,
-        MASK_THRESHOLD,
-        255,
-        cv::THRESH_BINARY
-    );
-
-    if (predictionType == "Object Detection")
-    {
-        cv::Mat kernel = cv::getStructuringElement(
-            cv::MORPH_RECT,
-            cv::Size(9, 9)
-        );
-
-        cv::morphologyEx(
-            mask,
-            mask,
-            cv::MORPH_CLOSE,
-            kernel
-        );
-
-        std::vector<std::vector<cv::Point>> contours;
-
-        cv::findContours(
-            mask,
-            contours,
-            cv::RETR_EXTERNAL,
-            cv::CHAIN_APPROX_SIMPLE
-        );
-
-        cv::Mat filled = cv::Mat::zeros(
-            mask.size(),
-            CV_8UC1
-        );
-
-        for (const auto& contour : contours)
-        {
-            if (cv::contourArea(contour) < 10.0)
-                continue;
-
-            cv::drawContours(
-                filled,
-                std::vector<std::vector<cv::Point>>{contour},
-                0,
-                cv::Scalar(255),
-                cv::FILLED
-            );
-        }
-
-        mask = filled;
-    }
-    else
-    {
-        cv::Mat kernel = cv::getStructuringElement(
-            cv::MORPH_ELLIPSE,
-            cv::Size(3, 3)
-        );
-
-        cv::morphologyEx(
-            mask,
-            mask,
-            cv::MORPH_OPEN,
-            kernel
-        );
-    }
-
-    return mask;
-}
-
 
 cv::Mat createOutput(
     const cv::Mat& frame,
@@ -313,7 +211,6 @@ cv::Mat createOutput(
     return output;
 }
 
-
 bool isWindowClosed()
 {
     try
@@ -331,7 +228,6 @@ bool isWindowClosed()
 
 }
 
-
 int main(int argc, char* argv[])
 {
     try
@@ -346,8 +242,6 @@ int main(int argc, char* argv[])
             << " FPS"
             << std::endl;
 
-        // Camera initialization.
-
         cv::VideoCapture cap;
 
         if (argc > 1)
@@ -361,8 +255,6 @@ int main(int argc, char* argv[])
                 "Could not open video source."
             );
         }
-
-        // Prediction manager.
 
         PredictionManager predictionManager;
 
@@ -398,15 +290,39 @@ int main(int argc, char* argv[])
             );
         }
 
-        // Motion estimator.
+        auto* segmentationEstimator =
+            dynamic_cast<SegmentationEstimator*>(
+                predictionManager.getPrediction(
+                    PredictionType::SEGMENTATION
+                )
+            );
+
+        if (!segmentationEstimator)
+        {
+            throw std::runtime_error(
+                "Segmentation estimator not registered."
+            );
+        }
+
+        auto* detectionEstimator =
+            dynamic_cast<ObjectDetectionEstimator*>(
+                predictionManager.getPrediction(
+                    PredictionType::OBJECT_DETECTION
+                )
+            );
+
+        if (!detectionEstimator)
+        {
+            throw std::runtime_error(
+                "Object detection estimator not registered."
+            );
+        }
 
         MotionEstimator motionEstimator;
 
         motionEstimator.setThreshold(
             MOTION_THRESHOLD
         );
-
-        // Point cloud visualizer.
 
         PointCloudVisualizer pointCloudVisualizer(
             CAMERA_FX,
@@ -419,8 +335,6 @@ int main(int argc, char* argv[])
             POINT_CLOUD_SAMPLING_STEP
         );
 
-        // Window initialization.
-
         cv::namedWindow(
             WINDOW_NAME,
             cv::WINDOW_NORMAL
@@ -432,14 +346,16 @@ int main(int argc, char* argv[])
             OUTPUT_HEIGHT
         );
 
-        // Frame buffers.
-
         cv::Mat frame;
 
         cv::Mat cachedVisualization;
         cv::Mat cachedPointCloud;
 
-        cv::Mat persistentForegroundMask;
+        // This is the active point-cloud colour map.
+        // It changes only after segmentation or detection.
+        // Depth predictions deliberately leave it unchanged.
+
+        cv::Mat cachedPointColors;
 
         long long predictionCount = 0;
 
@@ -447,19 +363,13 @@ int main(int argc, char* argv[])
 
         auto nextPredictionTime = Clock::now();
 
-        // Main processing loop.
-
         while (running)
         {
             if (!cap.read(frame) || frame.empty())
                 break;
 
-            // Estimate motion on every frame.
-
             const MotionState motionState =
                 motionEstimator.estimateMotion(frame);
-
-            // Prediction scheduling.
 
             const auto predictionNow = Clock::now();
 
@@ -470,7 +380,7 @@ int main(int argc, char* argv[])
 
                 ++predictionCount;
 
-                // Alternate between depth and object perception.
+                // Alternate between depth and perception.
 
                 if (predictionCount % 2 == 1)
                 {
@@ -483,13 +393,13 @@ int main(int argc, char* argv[])
                         predictionManager.getVisualization(
                             PredictionType::DEPTH
                         );
+
+                    // IMPORTANT:
+                    // Do not modify cachedPointColors here.
+                    // Keep the previous segmentation/detection colours.
                 }
                 else
                 {
-                    std::string predictionType;
-
-                    // Adaptive segmentation / detection based on motion.
-
                     if (motionState == MotionState::MOVING)
                     {
                         predictionManager.runPrediction(
@@ -502,7 +412,8 @@ int main(int argc, char* argv[])
                                 PredictionType::SEGMENTATION
                             );
 
-                        predictionType = "Segmentation";
+                        cachedPointColors =
+                            segmentationEstimator->getSegmentationColorMap();
                     }
                     else
                     {
@@ -516,31 +427,10 @@ int main(int argc, char* argv[])
                                 PredictionType::OBJECT_DETECTION
                             );
 
-                        predictionType = "Object Detection";
-                    }
-
-                    // Update foreground mask.
-
-                    cv::Mat newMask = createForegroundMask(
-                        frame,
-                        cachedVisualization,
-                        predictionType
-                    );
-
-                    if (!newMask.empty())
-                    {
-                        const int foregroundPixels =
-                            cv::countNonZero(newMask);
-
-                        if (foregroundPixels >= MIN_MASK_PIXELS)
-                        {
-                            persistentForegroundMask =
-                                newMask.clone();
-                        }
+                        cachedPointColors =
+                            detectionEstimator->getDetectionColorMap();
                     }
                 }
-
-                // Ensure valid visualization.
 
                 if (cachedVisualization.empty())
                 {
@@ -552,25 +442,24 @@ int main(int argc, char* argv[])
                 }
             }
 
-            // Update point cloud.
+            // Reconstruct using the latest depth and the latest
+            // available perception colour map.
 
             if (
                 depthEstimator->hasResult() &&
                 !depthEstimator->getDepth().empty() &&
-                !persistentForegroundMask.empty()
+                !cachedPointColors.empty()
             )
             {
                 pointCloudVisualizer.update(
                     frame,
                     depthEstimator->getDepth(),
-                    persistentForegroundMask
+                    cachedPointColors
                 );
 
                 cachedPointCloud =
                     pointCloudVisualizer.getVisualization();
             }
-
-            // Compose visualization.
 
             cv::Mat combined = createOutput(
                 frame,
@@ -582,8 +471,6 @@ int main(int argc, char* argv[])
                 WINDOW_NAME,
                 combined
             );
-
-            // Handle keyboard input.
 
             const int key = cv::waitKey(1);
 
@@ -603,8 +490,6 @@ int main(int argc, char* argv[])
                 break;
             }
         }
-
-        // Cleanup.
 
         cap.release();
 

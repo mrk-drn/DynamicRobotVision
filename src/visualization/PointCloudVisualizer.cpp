@@ -7,12 +7,9 @@
 
 #include <cmath>
 #include <stdexcept>
-#include <string>
 
 namespace
 {
-
-// Colors
 
 const cv::Scalar CAMERA_COLOR(80, 255, 80);
 
@@ -22,19 +19,12 @@ const cv::Scalar BACKGROUND_COLOR(
     PointCloudConfig::BACKGROUND_RED
 );
 
-const cv::Scalar TITLE_COLOR(220, 220, 235);
-const cv::Scalar INFO_COLOR(150, 160, 180);
-
-// Point representation
-
 struct Point3D
 {
     float x;
     float y;
     float z;
 };
-
-// Projection
 
 bool projectPoint(
     const Point3D& p,
@@ -108,8 +98,6 @@ bool projectPoint(
     return true;
 }
 
-// Camera frustum
-
 void drawFrustum(cv::Mat& image)
 {
     const Point3D origin = {
@@ -144,14 +132,8 @@ void drawFrustum(cv::Mat& image)
     cv::Point2f cameraScreen;
     float cameraDepth = 0.0f;
 
-    if (!projectPoint(
-        origin,
-        cameraScreen,
-        cameraDepth
-    ))
-    {
+    if (!projectPoint(origin, cameraScreen, cameraDepth))
         return;
-    }
 
     cv::Point2f corners[4];
 
@@ -189,9 +171,7 @@ void drawFrustum(cv::Mat& image)
     }
 }
 
-} // namespace
-
-// Constructor
+}
 
 PointCloudVisualizer::PointCloudVisualizer(
     float fx,
@@ -227,11 +207,7 @@ PointCloudVisualizer::PointCloudVisualizer(
     );
 }
 
-// Destructor
-
 PointCloudVisualizer::~PointCloudVisualizer() = default;
-
-// Sampling configuration
 
 void PointCloudVisualizer::setSamplingStep(int step)
 {
@@ -245,21 +221,26 @@ void PointCloudVisualizer::setSamplingStep(int step)
     samplingStep_ = step;
 }
 
-// Main update
-
 void PointCloudVisualizer::update(
     const cv::Mat& colorFrame,
     const cv::Mat& depthMap,
-    const cv::Mat& segmentationMask
+    const cv::Mat& pointColors
 )
 {
     (void)colorFrame;
 
-    if (depthMap.empty())
+    if (depthMap.empty() || pointColors.empty())
     {
         visualization_.setTo(BACKGROUND_COLOR);
         renderPointCloud();
         return;
+    }
+
+    if (pointColors.type() != CV_8UC3)
+    {
+        throw std::runtime_error(
+            "Point colours must be CV_8UC3."
+        );
     }
 
     cv::Mat depth;
@@ -273,53 +254,18 @@ void PointCloudVisualizer::update(
         depthMap.convertTo(depth, CV_32FC1);
     }
 
-    cv::Mat mask;
+    cv::Mat colors = pointColors;
 
-    if (!segmentationMask.empty())
+    if (colors.size() != depth.size())
     {
-        if (segmentationMask.channels() == 1)
-        {
-            mask = segmentationMask;
-        }
-        else if (segmentationMask.channels() == 3)
-        {
-            cv::cvtColor(
-                segmentationMask,
-                mask,
-                cv::COLOR_BGR2GRAY
-            );
-        }
-        else if (segmentationMask.channels() == 4)
-        {
-            cv::cvtColor(
-                segmentationMask,
-                mask,
-                cv::COLOR_BGRA2GRAY
-            );
-        }
-        else
-        {
-            throw std::runtime_error(
-                "Unsupported segmentation mask channels."
-            );
-        }
-
-        if (mask.size() != depth.size())
-        {
-            cv::resize(
-                mask,
-                mask,
-                depth.size(),
-                0,
-                0,
-                cv::INTER_NEAREST
-            );
-        }
-
-        if (mask.type() != CV_8UC1)
-        {
-            mask.convertTo(mask, CV_8UC1);
-        }
+        cv::resize(
+            colors,
+            colors,
+            depth.size(),
+            0,
+            0,
+            cv::INTER_NEAREST
+        );
     }
 
     const float scaleX =
@@ -348,7 +294,7 @@ void PointCloudVisualizer::update(
 
     cudaBackend_->render(
         depth,
-        mask,
+        colors,
         samplingStep_,
         fx,
         fy,
@@ -360,14 +306,10 @@ void PointCloudVisualizer::update(
     renderPointCloud();
 }
 
-// Interface rendering
-
 void PointCloudVisualizer::renderPointCloud()
 {
     drawFrustum(visualization_);
 }
-
-// Visualization access
 
 cv::Mat PointCloudVisualizer::getVisualization() const
 {

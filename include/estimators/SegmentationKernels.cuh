@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <opencv2/core.hpp>
@@ -10,6 +9,7 @@ namespace SegmentationKernels {
 
 class Processor {
 public:
+
     Processor();
 
     ~Processor();
@@ -33,11 +33,14 @@ public:
         float maskThreshold,
         float opacity,
         cv::Mat& visualization,
-        cv::Mat& combinedMask
+        cv::Mat& combinedMask,
+        cv::Mat& colorMap
     );
 
 private:
+
     struct Impl;
+
     std::unique_ptr<Impl> impl_;
 };
 

@@ -1,3 +1,4 @@
+
 #include "estimators/ObjectDetectionEstimator.hpp"
 #include "estimators/ObjectDetectionKernels.cuh"
 
@@ -8,8 +9,10 @@
 #include <stdexcept>
 #include <vector>
 #include <utility>
+#include <string>
 
 #include <cuda_runtime.h>
+#include <opencv2/imgproc.hpp>
 
 namespace {
 
@@ -56,6 +59,8 @@ const std::array<std::string, NUM_CLASSES> CLASS_NAMES = {
     "hair drier", "toothbrush"
 };
 
+// IMPORTANT:
+// These are exactly the same colours used for 2D bounding boxes.
 const std::array<cv::Scalar, NUM_CLASSES>& getClassColors()
 {
     static const std::array<cv::Scalar, NUM_CLASSES> colors = [] {
@@ -299,6 +304,7 @@ void ObjectDetectionEstimator::predict(
     if (frame.empty()) {
 
         visualization_.release();
+        detectionColorMap_.release();
 
         return;
     }
@@ -316,8 +322,6 @@ void ObjectDetectionEstimator::predict(
 
     const int frameWidth = frame.cols;
     const int frameHeight = frame.rows;
-
-    // Calculate letterbox dimensions.
 
     const double scale = std::min(
         static_cast<double>(INPUT_WIDTH) / frameWidth,
@@ -358,22 +362,16 @@ void ObjectDetectionEstimator::predict(
         "Uploading source frame"
     );
 
-    // Perform preprocessing on the GPU:
-    // BGR to RGB, resize, letterbox, normalize, and HWC to CHW.
-
     launchDetectionPreprocess(
         gpuFrame_,
         frameWidth,
         frameHeight,
         static_cast<std::size_t>(frameWidth) * 3,
-
         gpuInput_,
-
         resizedWidth,
         resizedHeight,
         padLeft,
         padTop,
-
         nullptr
     );
 
@@ -381,9 +379,6 @@ void ObjectDetectionEstimator::predict(
         cudaGetLastError(),
         "Launching preprocessing kernel"
     );
-
-    // Ensure preprocessing finishes before ONNX Runtime
-    // consumes the GPU input buffer.
 
     checkCuda(
         cudaDeviceSynchronize(),
@@ -412,8 +407,6 @@ void ObjectDetectionEstimator::predict(
             inputShape,
             4
         );
-
-    // Bind input and output directly to CUDA memory.
 
     Ort::IoBinding binding(session);
 
@@ -476,9 +469,6 @@ void ObjectDetectionEstimator::predict(
         ),
         "Downloading detection results"
     );
-
-    // Decode detections. The model output is already filtered,
-    // so no additional NMS pass is required.
 
     std::vector<Detection> detections;
 
@@ -582,16 +572,62 @@ void ObjectDetectionEstimator::predict(
         });
     }
 
-    // Draw detections on the original frame.
+    // Sort by confidence so that higher-confidence detections
+    // claim overlapping pixels first.
+
+    std::stable_sort(
+        detections.begin(),
+        detections.end(),
+        [](const Detection& a, const Detection& b) {
+            return a.confidence > b.confidence;
+        }
+    );
 
     visualization_ = frame.clone();
 
+    // Black represents pixels outside all detected boxes.
+    detectionColorMap_ = cv::Mat(
+        frame.size(),
+        CV_8UC3,
+        cv::Scalar(0, 0, 0)
+    );
+
     const auto& colors = getClassColors();
+
+    // Construct pure detection colour map.
+    // First detection to claim a pixel wins.
+
+    cv::Mat assigned(
+        frame.size(),
+        CV_8UC1,
+        cv::Scalar(0)
+    );
 
     for (const auto& detection : detections) {
 
         const cv::Scalar& color =
             colors[detection.classId];
+
+        cv::Mat assignedRegion =
+            assigned(detection.box);
+
+        cv::Mat colorRegion =
+            detectionColorMap_(detection.box);
+
+        const cv::Mat available =
+            assignedRegion == 0;
+
+        colorRegion.setTo(
+            color,
+            available
+        );
+
+        assignedRegion.setTo(
+            255,
+            available
+        );
+
+        // Draw bounding box.
 
         cv::rectangle(
             visualization_,
@@ -662,4 +698,13 @@ cv::Mat ObjectDetectionEstimator::visualize() const
     }
 
     return visualization_.clone();
+}
+
+cv::Mat ObjectDetectionEstimator::getDetectionColorMap() const
+{
+    if (detectionColorMap_.empty()) {
+        return {};
+    }
+
+    return detectionColorMap_.clone();
 }

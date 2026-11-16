@@ -17,9 +17,7 @@ public:
 
     PredictionType type() const override;
 
-    void predict(
-        const cv::Mat& frame
-    ) override;
+    void predict(const cv::Mat& frame) override;
 
     cv::Mat visualize() const override;
 
@@ -28,6 +26,9 @@ public:
     std::string name() const override;
 
     cv::Mat getSegmentationMask() const;
+
+    // New: pure class-colour map (BGR).
+    cv::Mat getSegmentationColorMap() const;
 
 private:
 
@@ -39,6 +40,9 @@ private:
 
     cv::Mat visualization_;
     cv::Mat segmentationMask_;
+
+    // New.
+    cv::Mat segmentationColorMap_;
 
     SegmentationKernels::Processor cudaProcessor_;
 };

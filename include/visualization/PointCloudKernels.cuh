@@ -1,26 +1,28 @@
 
 #pragma once
 
-#include <opencv2/core.hpp>
+#include <opencv2/opencv.hpp>
 
 #include <memory>
 
-class CudaPointCloudBackend
-{
+class CudaPointCloudBackend {
 public:
-    static constexpr int WIDTH = 640;
-    static constexpr int HEIGHT = 720;
 
     CudaPointCloudBackend();
 
     ~CudaPointCloudBackend();
 
-    CudaPointCloudBackend(const CudaPointCloudBackend&) = delete;
-    CudaPointCloudBackend& operator=(const CudaPointCloudBackend&) = delete;
+    CudaPointCloudBackend(
+        const CudaPointCloudBackend&
+    ) = delete;
+
+    CudaPointCloudBackend& operator=(
+        const CudaPointCloudBackend&
+    ) = delete;
 
     void render(
         const cv::Mat& depth,
-        const cv::Mat& mask,
+        const cv::Mat& pointColors,
         int samplingStep,
         float fx,
         float fy,
@@ -30,6 +32,7 @@ public:
     );
 
 private:
+
     struct Impl;
 
     std::unique_ptr<Impl> impl_;

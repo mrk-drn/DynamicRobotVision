@@ -1,3 +1,4 @@
+
 #include "estimators/SegmentationKernels.cuh"
 
 #include <cuda_runtime.h>
@@ -65,13 +66,6 @@ void reserveDevice(
 }
 
 // Batched mask generation.
-//
-// Grid dimension X: mask pixels.
-// Grid dimension Y: instances.
-//
-// Each CUDA block processes part of one instance mask.
-// Every output value is the dot product of the 32
-// coefficients and the corresponding prototype values.
 
 __global__ void generateMasksKernel(
     const float* coefficients,
@@ -114,8 +108,6 @@ __global__ void generateMasksKernel(
         );
     }
 
-    // Numerically stable sigmoid.
-
     const float probability =
         sum >= 0.0f
         ? 1.0f / (1.0f + expf(-sum))
@@ -127,7 +119,7 @@ __global__ void generateMasksKernel(
     ] = probability;
 }
 
-// Bilinear sampling from one 160x160 instance mask.
+// Bilinear sampling from one instance mask.
 
 __device__ __forceinline__ float sampleMask(
     const float* mask,
@@ -179,10 +171,6 @@ __device__ __forceinline__ float sampleMask(
 }
 
 // One thread per output pixel.
-//
-// All instances are evaluated together.
-// Bounding-box tests avoid sampling masks outside
-// their respective regions.
 
 __global__ void composeMasksKernel(
     const unsigned char* frame,
@@ -197,6 +185,9 @@ __global__ void composeMasksKernel(
 
     unsigned char* combinedMask,
     std::size_t combinedMaskStep,
+
+    unsigned char* colorMap,
+    std::size_t colorMapStep,
 
     int width,
     int height,
@@ -232,6 +223,9 @@ __global__ void composeMasksKernel(
     unsigned char* outputMask =
         combinedMask + y * combinedMaskStep + x;
 
+    unsigned char* outputColor =
+        colorMap + y * colorMapStep + x * 3;
+
     const float inputX =
         (static_cast<float>(x) + 0.5f) *
         resizedWidth / width +
@@ -243,11 +237,13 @@ __global__ void composeMasksKernel(
         padTop;
 
     const float maskX =
-        inputX * (static_cast<float>(MASK_WIDTH) / INPUT_WIDTH)
+        inputX *
+        (static_cast<float>(MASK_WIDTH) / INPUT_WIDTH)
         - 0.5f;
 
     const float maskY =
-        inputY * (static_cast<float>(MASK_HEIGHT) / INPUT_HEIGHT)
+        inputY *
+        (static_cast<float>(MASK_HEIGHT) / INPUT_HEIGHT)
         - 0.5f;
 
     float colorB = 0.0f;
@@ -256,8 +252,7 @@ __global__ void composeMasksKernel(
 
     bool foreground = false;
 
-    // Instances are sorted by descending confidence.
-    // Preserve the previous composition behavior:
+    // Preserve existing composition behavior:
     // later overlapping instances overwrite earlier ones.
 
     for (int i = 0; i < instanceCount; ++i) {
@@ -305,6 +300,8 @@ __global__ void composeMasksKernel(
 
     if (foreground) {
 
+        // Original blended visualization.
+
         destination[0] = static_cast<unsigned char>(
             fminf(
                 fmaxf(
@@ -338,7 +335,20 @@ __global__ void composeMasksKernel(
             )
         );
 
+        // Binary mask.
+
         *outputMask = 255;
+
+        // Pure segmentation color.
+
+        outputColor[0] =
+            static_cast<unsigned char>(colorB);
+
+        outputColor[1] =
+            static_cast<unsigned char>(colorG);
+
+        outputColor[2] =
+            static_cast<unsigned char>(colorR);
     }
     else {
 
@@ -347,6 +357,10 @@ __global__ void composeMasksKernel(
         destination[2] = source[2];
 
         *outputMask = 0;
+
+        outputColor[0] = 0;
+        outputColor[1] = 0;
+        outputColor[2] = 0;
     }
 }
 
@@ -364,6 +378,7 @@ struct Processor::Impl {
     unsigned char* dFrame = nullptr;
     unsigned char* dVisualization = nullptr;
     unsigned char* dCombinedMask = nullptr;
+    unsigned char* dColorMap = nullptr;
 
     std::size_t prototypeCapacity = 0;
     std::size_t coefficientCapacity = 0;
@@ -375,6 +390,7 @@ struct Processor::Impl {
     std::size_t frameCapacity = 0;
     std::size_t visualizationCapacity = 0;
     std::size_t combinedMaskCapacity = 0;
+    std::size_t colorMapCapacity = 0;
 
     cudaStream_t stream = nullptr;
 
@@ -404,6 +420,7 @@ struct Processor::Impl {
         cudaFree(dFrame);
         cudaFree(dVisualization);
         cudaFree(dCombinedMask);
+        cudaFree(dColorMap);
 
         if (stream != nullptr) {
             cudaStreamDestroy(stream);
@@ -435,7 +452,8 @@ void Processor::process(
     float maskThreshold,
     float opacity,
     cv::Mat& visualization,
-    cv::Mat& combinedMask
+    cv::Mat& combinedMask,
+    cv::Mat& colorMap
 ) {
     if (
         frame.empty() ||
@@ -532,6 +550,14 @@ void Processor::process(
         gpu.dCombinedMask,
         gpu.combinedMaskCapacity,
         pixelCount
+    );
+
+    // Allocate segmentation color map on GPU.
+
+    reserveDevice(
+        gpu.dColorMap,
+        gpu.colorMapCapacity,
+        frameBytes
     );
 
     checkCuda(
@@ -634,21 +660,32 @@ void Processor::process(
     >>>(
         gpu.dFrame,
         width * 3,
+
         gpu.dMasks,
         gpu.dBoxes,
         gpu.dColors,
+
         gpu.dVisualization,
         width * 3,
+
         gpu.dCombinedMask,
         width,
+
+        gpu.dColorMap,
+        width * 3,
+
         width,
         height,
+
         resizedWidth,
         resizedHeight,
+
         padLeft,
         padTop,
+
         maskThreshold,
         opacity,
+
         instanceCount
     );
 
@@ -656,6 +693,8 @@ void Processor::process(
         cudaGetLastError(),
         "composeMasksKernel"
     );
+
+    // Create output matrices.
 
     visualization.create(
         height,
@@ -668,6 +707,14 @@ void Processor::process(
         width,
         CV_8UC1
     );
+
+    colorMap.create(
+        height,
+        width,
+        CV_8UC3
+    );
+
+    // Download visualization.
 
     checkCuda(
         cudaMemcpy2DAsync(
@@ -683,6 +730,8 @@ void Processor::process(
         "Download visualization"
     );
 
+    // Download combined binary mask.
+
     checkCuda(
         cudaMemcpy2DAsync(
             combinedMask.data,
@@ -696,6 +745,24 @@ void Processor::process(
         ),
         "Download combined mask"
     );
+
+    // Download pure segmentation color map.
+
+    checkCuda(
+        cudaMemcpy2DAsync(
+            colorMap.data,
+            colorMap.step,
+            gpu.dColorMap,
+            width * 3,
+            width * 3,
+            height,
+            cudaMemcpyDeviceToHost,
+            gpu.stream
+        ),
+        "Download segmentation color map"
+    );
+
+    // All downloads and kernel operations complete here.
 
     checkCuda(
         cudaStreamSynchronize(gpu.stream),

@@ -1,3 +1,4 @@
+
 #include "estimators/SegmentationEstimator.hpp"
 
 #include <cuda_runtime.h>
@@ -30,7 +31,7 @@ constexpr int MASK_WIDTH = 192;
 constexpr int MASK_HEIGHT = 192;
 
 constexpr float CONFIDENCE_SCORE = 0.05f;
-constexpr float MASK_THRESHOLD = 0.6f;
+constexpr float MASK_THRESHOLD = 0.5f;
 constexpr float MASK_OPACITY = 0.5f;
 
 constexpr float NMS_THRESHOLD = 0.90f;
@@ -217,10 +218,13 @@ bool SegmentationEstimator::hasResult() const
 void SegmentationEstimator::predict(
     const cv::Mat& frame
 ) {
+    // Handle empty input.
+
     if (frame.empty()) {
 
         visualization_.release();
         segmentationMask_.release();
+        segmentationColorMap_.release();
 
         return;
     }
@@ -541,7 +545,6 @@ void SegmentationEstimator::predict(
         }
     }
 
-
     // Class-wise Non-Maximum Suppression.
 
     std::vector<Instance> filteredInstances;
@@ -615,17 +618,23 @@ void SegmentationEstimator::predict(
         }
     );
 
-    // Initialize empty segmentation output.
-
-    segmentationMask_ = cv::Mat(
-        frame.size(),
-        CV_8UC1,
-        cv::Scalar(0)
-    );
+    // Handle frames with no detected instances.
 
     if (filteredInstances.empty()) {
 
         visualization_ = frame.clone();
+
+        segmentationMask_ = cv::Mat(
+            frame.size(),
+            CV_8UC1,
+            cv::Scalar(0)
+        );
+
+        segmentationColorMap_ = cv::Mat(
+            frame.size(),
+            CV_8UC3,
+            cv::Scalar(0, 0, 0)
+        );
 
         return;
     }
@@ -702,10 +711,13 @@ void SegmentationEstimator::predict(
         MASK_THRESHOLD,
         MASK_OPACITY,
         visualization_,
-        segmentationMask_
+        segmentationMask_,
+        segmentationColorMap_
     );
 }
 
+
+// Return blended visualization.
 
 cv::Mat SegmentationEstimator::visualize() const
 {
@@ -717,6 +729,8 @@ cv::Mat SegmentationEstimator::visualize() const
 }
 
 
+// Return binary segmentation mask.
+
 cv::Mat SegmentationEstimator::getSegmentationMask() const
 {
     if (segmentationMask_.empty()) {
@@ -724,4 +738,16 @@ cv::Mat SegmentationEstimator::getSegmentationMask() const
     }
 
     return segmentationMask_.clone();
+}
+
+
+// Return pure segmentation color map.
+
+cv::Mat SegmentationEstimator::getSegmentationColorMap() const
+{
+    if (segmentationColorMap_.empty()) {
+        return {};
+    }
+
+    return segmentationColorMap_.clone();
 }

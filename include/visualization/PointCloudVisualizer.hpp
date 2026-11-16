@@ -1,15 +1,15 @@
 
 #pragma once
 
-#include <opencv2/core.hpp>
+#include "visualization/PointCloudKernels.cuh"
+
+#include <opencv2/opencv.hpp>
 
 #include <memory>
 
-class CudaPointCloudBackend;
-
-class PointCloudVisualizer
-{
+class PointCloudVisualizer {
 public:
+
     PointCloudVisualizer(
         float fx,
         float fy,
@@ -19,30 +19,36 @@ public:
 
     ~PointCloudVisualizer();
 
-    PointCloudVisualizer(const PointCloudVisualizer&) = delete;
-    PointCloudVisualizer& operator=(const PointCloudVisualizer&) = delete;
+    PointCloudVisualizer(
+        const PointCloudVisualizer&
+    ) = delete;
+
+    PointCloudVisualizer& operator=(
+        const PointCloudVisualizer&
+    ) = delete;
 
     void setSamplingStep(int step);
 
     void update(
         const cv::Mat& colorFrame,
         const cv::Mat& depthMap,
-        const cv::Mat& segmentationMask = cv::Mat()
+        const cv::Mat& pointColors
     );
 
     cv::Mat getVisualization() const;
 
 private:
-    void renderPointCloud();
 
     float fx_;
     float fy_;
     float cx_;
     float cy_;
 
-    int samplingStep_ = 5;
+    int samplingStep_ = 10;
 
     cv::Mat visualization_;
 
     std::unique_ptr<CudaPointCloudBackend> cudaBackend_;
+
+    void renderPointCloud();
 };

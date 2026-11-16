@@ -1,12 +1,11 @@
+
 #include "visualization/PointCloudKernels.cuh"
 #include "visualization/PointCloudConfig.cuh"
 
 #include <cuda_runtime.h>
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -44,16 +43,8 @@ unsigned int orderedFloat(float value)
             : 0x80000000u);
 }
 
-__device__ __forceinline__
-unsigned char clampByte(float value)
-{
-    value = fminf(255.0f, fmaxf(0.0f, value));
-
-    return static_cast<unsigned char>(value);
-}
-
 __global__ void clearBufferKernel(
-    unsigned long long* __restrict__ buffer,
+    unsigned long long* buffer,
     int total
 )
 {
@@ -67,18 +58,22 @@ __global__ void clearBufferKernel(
 }
 
 __global__ void renderPointsKernel(
-    const float* __restrict__ depth,
-    const unsigned char* __restrict__ mask,
-    unsigned long long* __restrict__ framebuffer,
+    const float* depth,
+    const unsigned char* pointColors,
+    unsigned long long* framebuffer,
+
     int width,
     int height,
+
     int step,
     int sampledWidth,
     int sampledHeight,
+
     float fx,
     float fy,
     float cx,
     float cy,
+
     float cosYaw,
     float sinYaw,
     float cosPitch,
@@ -103,15 +98,31 @@ __global__ void renderPointsKernel(
     const int pixel =
         v * width + u;
 
-    if (mask != nullptr && mask[pixel] == 0)
+    const int colorIndex = pixel * 3;
+
+    const unsigned int blue =
+        pointColors[colorIndex];
+
+    const unsigned int green =
+        pointColors[colorIndex + 1];
+
+    const unsigned int red =
+        pointColors[colorIndex + 2];
+
+    // Black means background.
+    if (
+        blue == 0 &&
+        green == 0 &&
+        red == 0
+    )
+    {
         return;
+    }
 
     const float rawDepth = depth[pixel];
 
     if (!isfinite(rawDepth) || rawDepth <= 0.0f)
         return;
-
-    // Backprojection.
 
     const float distance = rawDepth * 1000.0f;
 
@@ -132,8 +143,6 @@ __global__ void renderPointsKernel(
     )
         return;
 
-    // Camera rotation.
-
     const float rotatedX =
         x * cosYaw - y * sinYaw;
 
@@ -145,8 +154,6 @@ __global__ void renderPointsKernel(
 
     const float cameraDepth =
         rotatedY * cosPitch - z * sinPitch;
-
-    // Perspective projection.
 
     const float denominator =
         CAMERA_FOCAL_LENGTH +
@@ -179,35 +186,15 @@ __global__ void renderPointsKernel(
     )
         return;
 
-    // Fixed depth-dependent shading.
-
-    const float brightness =
-        0.45f + 0.55f *
-        (1.0f - fminf(
-            1.0f,
-            fmaxf(0.0f, cameraDepth / 10000.0f)
-        ));
-
-    const unsigned int blue =
-        clampByte(STANDARD_BLUE * brightness);
-
-    const unsigned int green =
-        clampByte(STANDARD_GREEN * brightness);
-
-    const unsigned int red =
-        clampByte(STANDARD_RED * brightness);
+    const unsigned int color =
+        blue | (green << 8) | (red << 16);
 
     const unsigned int depthKey =
         orderedFloat(cameraDepth);
 
-    const unsigned int color =
-        blue | (green << 8) | (red << 16);
-
     const unsigned long long packed =
         (static_cast<unsigned long long>(depthKey) << 32) |
         color;
-
-    // Rasterize a small square around the point.
 
     #pragma unroll
     for (int dy = -POINT_RADIUS; dy <= POINT_RADIUS; ++dy)
@@ -236,8 +223,8 @@ __global__ void renderPointsKernel(
 }
 
 __global__ void resolveKernel(
-    const unsigned long long* __restrict__ framebuffer,
-    uchar3* __restrict__ output,
+    const unsigned long long* framebuffer,
+    uchar3* output,
     int total
 )
 {
@@ -271,13 +258,13 @@ __global__ void resolveKernel(
     );
 }
 
-} // namespace
+}
 
 struct CudaPointCloudBackend::Impl
 {
     float* d_depth = nullptr;
 
-    unsigned char* d_mask = nullptr;
+    unsigned char* d_pointColors = nullptr;
 
     unsigned long long* d_framebuffer = nullptr;
 
@@ -286,7 +273,7 @@ struct CudaPointCloudBackend::Impl
     cudaStream_t stream = nullptr;
 
     size_t depthCapacity = 0;
-    size_t maskCapacity = 0;
+    size_t colorCapacity = 0;
 
     Impl()
     {
@@ -337,23 +324,28 @@ struct CudaPointCloudBackend::Impl
         depthCapacity = count;
     }
 
-    void ensureMaskCapacity(size_t count)
+    void ensureColorCapacity(size_t count)
     {
-        if (count <= maskCapacity)
+        if (count <= colorCapacity)
             return;
 
-        if (d_mask)
-            checkCuda(cudaFree(d_mask), "Free mask");
+        if (d_pointColors)
+        {
+            checkCuda(
+                cudaFree(d_pointColors),
+                "Free point colours"
+            );
+        }
 
         checkCuda(
             cudaMalloc(
-                &d_mask,
+                &d_pointColors,
                 count
             ),
-            "Allocate mask"
+            "Allocate point colours"
         );
 
-        maskCapacity = count;
+        colorCapacity = count;
     }
 
     ~Impl()
@@ -364,8 +356,8 @@ struct CudaPointCloudBackend::Impl
         if (d_depth)
             cudaFree(d_depth);
 
-        if (d_mask)
-            cudaFree(d_mask);
+        if (d_pointColors)
+            cudaFree(d_pointColors);
 
         if (d_framebuffer)
             cudaFree(d_framebuffer);
@@ -387,7 +379,7 @@ CudaPointCloudBackend::~CudaPointCloudBackend() = default;
 
 void CudaPointCloudBackend::render(
     const cv::Mat& depth,
-    const cv::Mat& mask,
+    const cv::Mat& pointColors,
     int samplingStep,
     float fx,
     float fy,
@@ -400,6 +392,17 @@ void CudaPointCloudBackend::render(
         throw std::invalid_argument(
             "Depth must be CV_32FC1"
         );
+
+    if (
+        pointColors.empty() ||
+        pointColors.type() != CV_8UC3 ||
+        pointColors.size() != depth.size()
+    )
+    {
+        throw std::invalid_argument(
+            "Point colours must be matching CV_8UC3"
+        );
+    }
 
     if (samplingStep < 1)
         throw std::invalid_argument(
@@ -416,14 +419,6 @@ void CudaPointCloudBackend::render(
             "Invalid focal lengths"
         );
 
-    if (
-        !mask.empty() &&
-        (mask.type() != CV_8UC1 || mask.size() != depth.size())
-    )
-        throw std::invalid_argument(
-            "Mask must be matching CV_8UC1"
-        );
-
     const int width = depth.cols;
     const int height = depth.rows;
 
@@ -437,13 +432,14 @@ void CudaPointCloudBackend::render(
         static_cast<size_t>(sampledWidth) *
         sampledHeight;
 
-    const size_t depthSize =
+    const size_t pixelCount =
         static_cast<size_t>(width) * height;
 
-    impl_->ensureDepthCapacity(depthSize);
+    const size_t colorBytes =
+        pixelCount * 3;
 
-    if (!mask.empty())
-        impl_->ensureMaskCapacity(depthSize);
+    impl_->ensureDepthCapacity(pixelCount);
+    impl_->ensureColorCapacity(colorBytes);
 
     checkCuda(
         cudaMemcpy2DAsync(
@@ -459,34 +455,27 @@ void CudaPointCloudBackend::render(
         "Upload depth"
     );
 
-    const unsigned char* deviceMask = nullptr;
-
-    if (!mask.empty())
-    {
-        checkCuda(
-            cudaMemcpy2DAsync(
-                impl_->d_mask,
-                width,
-                mask.ptr<unsigned char>(),
-                mask.step,
-                width,
-                height,
-                cudaMemcpyHostToDevice,
-                impl_->stream
-            ),
-            "Upload mask"
-        );
-
-        deviceMask = impl_->d_mask;
-    }
+    checkCuda(
+        cudaMemcpy2DAsync(
+            impl_->d_pointColors,
+            width * 3,
+            pointColors.data,
+            pointColors.step,
+            width * 3,
+            height,
+            cudaMemcpyHostToDevice,
+            impl_->stream
+        ),
+        "Upload point colours"
+    );
 
     constexpr int THREADS = 256;
 
-    const int pixelCount =
+    const int pixelCountOutput =
         RENDER_WIDTH * RENDER_HEIGHT;
 
     const int clearBlocks =
-        (pixelCount + THREADS - 1) / THREADS;
+        (pixelCountOutput + THREADS - 1) / THREADS;
 
     const int pointBlocks =
         static_cast<int>(
@@ -500,16 +489,13 @@ void CudaPointCloudBackend::render(
         impl_->stream
     >>>(
         impl_->d_framebuffer,
-        pixelCount
+        pixelCountOutput
     );
 
     checkCuda(
         cudaGetLastError(),
         "Clear framebuffer"
     );
-
-    const float yaw = CAMERA_YAW;
-    const float pitch = CAMERA_PITCH;
 
     renderPointsKernel<<<
         pointBlocks,
@@ -518,7 +504,7 @@ void CudaPointCloudBackend::render(
         impl_->stream
     >>>(
         impl_->d_depth,
-        deviceMask,
+        impl_->d_pointColors,
         impl_->d_framebuffer,
         width,
         height,
@@ -529,10 +515,10 @@ void CudaPointCloudBackend::render(
         fy,
         cx,
         cy,
-        std::cos(yaw),
-        std::sin(yaw),
-        std::cos(pitch),
-        std::sin(pitch)
+        std::cos(CAMERA_YAW),
+        std::sin(CAMERA_YAW),
+        std::cos(CAMERA_PITCH),
+        std::sin(CAMERA_PITCH)
     );
 
     checkCuda(
@@ -541,7 +527,7 @@ void CudaPointCloudBackend::render(
     );
 
     const int resolveBlocks =
-        (pixelCount + THREADS - 1) / THREADS;
+        (pixelCountOutput + THREADS - 1) / THREADS;
 
     resolveKernel<<<
         resolveBlocks,
@@ -551,7 +537,7 @@ void CudaPointCloudBackend::render(
     >>>(
         impl_->d_framebuffer,
         impl_->d_output,
-        pixelCount
+        pixelCountOutput
     );
 
     checkCuda(
@@ -559,19 +545,11 @@ void CudaPointCloudBackend::render(
         "Resolve framebuffer"
     );
 
-    if (
-        output.empty() ||
-        output.rows != RENDER_HEIGHT ||
-        output.cols != RENDER_WIDTH ||
-        output.type() != CV_8UC3
-    )
-    {
-        output.create(
-            RENDER_HEIGHT,
-            RENDER_WIDTH,
-            CV_8UC3
-        );
-    }
+    output.create(
+        RENDER_HEIGHT,
+        RENDER_WIDTH,
+        CV_8UC3
+    );
 
     checkCuda(
         cudaMemcpy2DAsync(

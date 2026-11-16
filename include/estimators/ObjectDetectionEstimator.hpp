@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include "core/Prediction.hpp"
@@ -38,13 +39,10 @@ public:
 
     std::string name() const override;
 
+    // Pure BGR detection colour map for point-cloud rendering.
+    cv::Mat getDetectionColorMap() const;
+
 private:
-
-    static constexpr int inputWidth = 768;
-    static constexpr int inputHeight = 768;
-
-    static constexpr int numDetections = 300;
-    static constexpr int numValues = 6;
 
     Ort::Env env;
     Ort::Session session{nullptr};
@@ -53,6 +51,7 @@ private:
     std::string outputName_;
 
     cv::Mat visualization_;
+    cv::Mat detectionColorMap_;
 
     unsigned char* gpuFrame_ = nullptr;
     float* gpuInput_ = nullptr;

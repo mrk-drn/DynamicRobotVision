@@ -1,18 +1,14 @@
 
 #pragma once
 
-#include <opencv2/opencv.hpp>
+#include <opencv2/core.hpp>
 
-#include <vtkSmartPointer.h>
+#include <memory>
 
-class vtkRenderer;
-class vtkRenderWindow;
-class vtkPolyData;
-class vtkPolyDataMapper;
-class vtkActor;
-class vtkWindowToImageFilter;
+class CudaPointCloudBackend;
 
-class PointCloudVisualizer {
+class PointCloudVisualizer
+{
 public:
     PointCloudVisualizer(
         float fx,
@@ -22,6 +18,9 @@ public:
     );
 
     ~PointCloudVisualizer();
+
+    PointCloudVisualizer(const PointCloudVisualizer&) = delete;
+    PointCloudVisualizer& operator=(const PointCloudVisualizer&) = delete;
 
     void setSamplingStep(int step);
 
@@ -34,14 +33,6 @@ public:
     cv::Mat getVisualization() const;
 
 private:
-    void initializeRenderer();
-
-    void generatePointCloud(
-        const cv::Mat& colorFrame,
-        const cv::Mat& depthMap,
-        const cv::Mat& segmentationMask
-    );
-
     void renderPointCloud();
 
     float fx_;
@@ -49,14 +40,9 @@ private:
     float cx_;
     float cy_;
 
-    int samplingStep_ = 10;
+    int samplingStep_ = 5;
 
     cv::Mat visualization_;
 
-    vtkSmartPointer<vtkRenderer> renderer_;
-    vtkSmartPointer<vtkRenderWindow> renderWindow_;
-    vtkSmartPointer<vtkPolyData> polyData_;
-    vtkSmartPointer<vtkPolyDataMapper> mapper_;
-    vtkSmartPointer<vtkActor> actor_;
-    vtkSmartPointer<vtkWindowToImageFilter> capture_;
+    std::unique_ptr<CudaPointCloudBackend> cudaBackend_;
 };

@@ -2,13 +2,13 @@ from ultralytics import YOLO
 from pathlib import Path
 import shutil
 
-model_path = Path("yolo26n.pt")
+model_path = Path("yolo26s.pt")
 
 model = YOLO(str(model_path))
 
 exported_path = Path(model.export(
     format="onnx",
-    imgsz=640,
+    imgsz=768,
     simplify=True,
     nms=False
 ))
@@ -16,7 +16,7 @@ exported_path = Path(model.export(
 models_dir = Path("models")
 models_dir.mkdir(exist_ok=True)
 
-target_path = models_dir / "yolo26n-detect.onnx"
+target_path = models_dir / "yolo26s-detect.onnx"
 
 shutil.move(str(exported_path), str(target_path))
 

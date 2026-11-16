@@ -1,6 +1,6 @@
 import onnxruntime as ort
 
-model_path = "models/yolo26n-detect.onnx"
+model_path = "models/yolo26s-detect.onnx"
 
 session = ort.InferenceSession(
     model_path,

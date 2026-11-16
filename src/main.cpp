@@ -1,4 +1,3 @@
-
 #include <iostream>
 #include <memory>
 #include <string>
@@ -6,6 +5,8 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 #include <opencv2/opencv.hpp>
 
@@ -16,9 +17,11 @@
 #include "visualization/Visualizer.hpp"
 #include "visualization/PointCloudVisualizer.hpp"
 
-namespace {
+namespace
+{
 
-constexpr double TARGET_FPS = 15.0;
+constexpr double PROCESSING_FPS = 30.0;
+constexpr double PREDICTION_FPS = 15.0;
 
 constexpr int OUTPUT_WIDTH = 1280;
 constexpr int OUTPUT_HEIGHT = 720;
@@ -35,45 +38,65 @@ constexpr int POINT_CLOUD_SAMPLING_STEP = 10;
 constexpr int MASK_THRESHOLD = 12;
 constexpr int MIN_MASK_PIXELS = 30;
 
-const std::string WINDOW_NAME = "AdaptivePerception";
+const std::string WINDOW_NAME = "AdaptiveRobotPerception";
+
+using Clock = std::chrono::steady_clock;
+
+const auto PROCESSING_INTERVAL =
+    std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(
+            1.0 / PROCESSING_FPS
+        )
+    );
+
+const auto PREDICTION_INTERVAL =
+    std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(
+            1.0 / PREDICTION_FPS
+        )
+    );
 
 
 cv::Mat fitToCanvas(
     const cv::Mat& source,
     const cv::Size& canvasSize,
     const cv::Scalar& background = cv::Scalar(25, 25, 25)
-) {
+)
+{
     cv::Mat canvas(
         canvasSize,
         CV_8UC3,
         background
     );
 
-    if (source.empty()) {
+    if (source.empty())
         return canvas;
-    }
 
     cv::Mat converted;
 
-    if (source.channels() == 1) {
+    if (source.channels() == 1)
+    {
         cv::cvtColor(
             source,
             converted,
             cv::COLOR_GRAY2BGR
         );
     }
-    else if (source.channels() == 4) {
+    else if (source.channels() == 4)
+    {
         cv::cvtColor(
             source,
             converted,
             cv::COLOR_BGRA2BGR
         );
     }
-    else {
+    else
+    {
         converted = source;
     }
 
-    if (converted.type() != CV_8UC3) {
+    if (converted.type() != CV_8UC3)
+    {
         converted.convertTo(converted, CV_8UC3);
     }
 
@@ -114,18 +137,18 @@ cv::Mat fitToCanvas(
 }
 
 
-// Extract foreground from the prediction visualization.
-
 cv::Mat createForegroundMask(
     const cv::Mat& original,
     const cv::Mat& prediction,
     const std::string& predictionType
-) {
+)
+{
     if (
         original.empty() ||
         prediction.empty() ||
         original.size() != prediction.size()
-    ) {
+    )
+    {
         return {};
     }
 
@@ -153,8 +176,8 @@ cv::Mat createForegroundMask(
         cv::THRESH_BINARY
     );
 
-    if (predictionType == "Object Detection") {
-
+    if (predictionType == "Object Detection")
+    {
         cv::Mat kernel = cv::getStructuringElement(
             cv::MORPH_RECT,
             cv::Size(9, 9)
@@ -181,11 +204,10 @@ cv::Mat createForegroundMask(
             CV_8UC1
         );
 
-        for (const auto& contour : contours) {
-
-            if (cv::contourArea(contour) < 10.0) {
+        for (const auto& contour : contours)
+        {
+            if (cv::contourArea(contour) < 10.0)
                 continue;
-            }
 
             cv::drawContours(
                 filled,
@@ -198,8 +220,8 @@ cv::Mat createForegroundMask(
 
         mask = filled;
     }
-    else {
-
+    else
+    {
         cv::Mat kernel = cv::getStructuringElement(
             cv::MORPH_ELLIPSE,
             cv::Size(3, 3)
@@ -220,9 +242,9 @@ cv::Mat createForegroundMask(
 cv::Mat createOutput(
     const cv::Mat& frame,
     const cv::Mat& prediction,
-    const cv::Mat& pointCloud,
-    const std::string& label
-) {
+    const cv::Mat& pointCloud
+)
+{
     constexpr int PANEL_GAP = 4;
 
     const int panelWidth =
@@ -284,7 +306,7 @@ cv::Mat createOutput(
 
     cv::putText(
         output,
-        "Original",
+        "Camera",
         cv::Point(15, 30),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
@@ -295,7 +317,7 @@ cv::Mat createOutput(
 
     cv::putText(
         output,
-        label,
+        "Inference",
         cv::Point(panelWidth + PANEL_GAP + 15, 30),
         cv::FONT_HERSHEY_SIMPLEX,
         0.8,
@@ -319,14 +341,17 @@ cv::Mat createOutput(
 }
 
 
-bool isWindowClosed() {
-    try {
+bool isWindowClosed()
+{
+    try
+    {
         return cv::getWindowProperty(
             WINDOW_NAME,
             cv::WND_PROP_VISIBLE
         ) == 0.0;
     }
-    catch (const cv::Exception&) {
+    catch (const cv::Exception&)
+    {
         return false;
     }
 }
@@ -334,38 +359,39 @@ bool isWindowClosed() {
 }
 
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
+    try
+    {
+        std::cout
+            << "AdaptiveRobotPerception started!"
+            << std::endl;
 
-    try {
+        std::cout
+            << "General processing: "
+            << PROCESSING_FPS
+            << " FPS"
+            << std::endl;
 
-        std::cout << "AdaptivePerception started!" << std::endl;
+        std::cout
+            << "Prediction: "
+            << PREDICTION_FPS
+            << " FPS"
+            << std::endl;
 
         cv::VideoCapture cap;
 
-        if (argc > 1) {
+        if (argc > 1)
             cap.open(argv[1]);
-        }
-        else {
+        else
             cap.open(0);
-        }
 
-        if (!cap.isOpened()) {
+        if (!cap.isOpened())
+        {
             throw std::runtime_error(
                 "Could not open video source."
             );
         }
-
-        double videoFPS = cap.get(cv::CAP_PROP_FPS);
-
-        if (!std::isfinite(videoFPS) || videoFPS <= 0.0) {
-            videoFPS = TARGET_FPS;
-        }
-
-        const double framesPerPrediction =
-            videoFPS / TARGET_FPS;
-
-
-        // Prediction manager.
 
         PredictionManager predictionManager;
 
@@ -377,16 +403,15 @@ int main(int argc, char* argv[]) {
 
         predictionManager.addPrediction(
             std::make_unique<SegmentationEstimator>(
-                "models/yolo26n-seg.onnx"
+                "models/yolo26s-seg.onnx"
             )
         );
 
         predictionManager.addPrediction(
             std::make_unique<ObjectDetectionEstimator>(
-                "models/yolo26n-detect.onnx"
+                "models/yolo26s-detect.onnx"
             )
         );
-
 
         auto* depthEstimator =
             dynamic_cast<DepthEstimator*>(
@@ -395,14 +420,12 @@ int main(int argc, char* argv[]) {
                 )
             );
 
-        if (!depthEstimator) {
+        if (!depthEstimator)
+        {
             throw std::runtime_error(
                 "Depth estimator not registered."
             );
         }
-
-
-        // Point cloud visualizer.
 
         PointCloudVisualizer pointCloudVisualizer(
             CAMERA_FX,
@@ -415,9 +438,6 @@ int main(int argc, char* argv[]) {
             POINT_CLOUD_SAMPLING_STEP
         );
 
-
-        // Display.
-
         cv::namedWindow(
             WINDOW_NAME,
             cv::WINDOW_NORMAL
@@ -429,52 +449,50 @@ int main(int argc, char* argv[]) {
             OUTPUT_HEIGHT
         );
 
-
         cv::Mat frame;
 
         cv::Mat cachedVisualization;
         cv::Mat cachedPointCloud;
 
-        // Persists through depth-only prediction cycles.
         cv::Mat persistentForegroundMask;
 
-        std::string cachedLabel =
-            "Waiting for prediction...";
-
-
-        long long frameIndex = 0;
         long long predictionCount = 0;
-
-        double nextPredictionFrame = 0.0;
 
         bool running = true;
 
+        auto nextProcessingTime = Clock::now();
+        auto nextPredictionTime = Clock::now();
 
-        // Main loop.
+        while (running)
+        {
+            const auto now = Clock::now();
 
-        while (running) {
-
-            if (!cap.read(frame) || frame.empty()) {
-                break;
+            if (now < nextProcessingTime)
+            {
+                std::this_thread::sleep_until(
+                    nextProcessingTime
+                );
             }
 
+            const auto processingStart = Clock::now();
 
-            const bool runPrediction =
-                static_cast<double>(frameIndex) + 1e-9 >=
-                nextPredictionFrame;
+            nextProcessingTime =
+                processingStart + PROCESSING_INTERVAL;
 
+            if (!cap.read(frame) || frame.empty())
+                break;
 
-            if (runPrediction) {
+            const auto predictionNow = Clock::now();
 
-                nextPredictionFrame += framesPerPrediction;
+            if (predictionNow >= nextPredictionTime)
+            {
+                nextPredictionTime =
+                    predictionNow + PREDICTION_INTERVAL;
 
                 ++predictionCount;
 
-
-                // Every second prediction: depth estimation.
-
-                if (predictionCount % 2 == 1) {
-
+                if (predictionCount % 2 == 1)
+                {
                     predictionManager.runPrediction(
                         PredictionType::DEPTH,
                         frame
@@ -484,25 +502,21 @@ int main(int argc, char* argv[]) {
                         predictionManager.getVisualization(
                             PredictionType::DEPTH
                         );
-
-                    cachedLabel = "Depth";
                 }
-
-                // Detection or segmentation cycle.
-
-                else {
-
+                else
+                {
                     const float nearestDistance =
                         depthEstimator->hasResult()
                         ? depthEstimator->nearestDistanceMeters()
                         : -1.0f;
 
+                    std::string predictionType;
 
                     if (
                         nearestDistance >= 0.0f &&
                         nearestDistance < CLOSE_DISTANCE_THRESHOLD
-                    ) {
-
+                    )
+                    {
                         predictionManager.runPrediction(
                             PredictionType::SEGMENTATION,
                             frame
@@ -513,11 +527,10 @@ int main(int argc, char* argv[]) {
                                 PredictionType::SEGMENTATION
                             );
 
-                        cachedLabel = "Segmentation";
+                        predictionType = "Segmentation";
                     }
-
-                    else {
-
+                    else
+                    {
                         predictionManager.runPrediction(
                             PredictionType::OBJECT_DETECTION,
                             frame
@@ -528,56 +541,44 @@ int main(int argc, char* argv[]) {
                                 PredictionType::OBJECT_DETECTION
                             );
 
-                        cachedLabel = "Object Detection";
+                        predictionType = "Object Detection";
                     }
-
-
-                    // Update the foreground mask only after
-                    // a detection or segmentation prediction.
 
                     cv::Mat newMask = createForegroundMask(
                         frame,
                         cachedVisualization,
-                        cachedLabel
+                        predictionType
                     );
 
-                    if (!newMask.empty()) {
-
+                    if (!newMask.empty())
+                    {
                         const int foregroundPixels =
                             cv::countNonZero(newMask);
 
-                        if (
-                            foregroundPixels >= MIN_MASK_PIXELS
-                        ) {
+                        if (foregroundPixels >= MIN_MASK_PIXELS)
+                        {
                             persistentForegroundMask =
                                 newMask.clone();
                         }
                     }
                 }
 
-
-                if (cachedVisualization.empty()) {
-
+                if (cachedVisualization.empty())
+                {
                     cachedVisualization = cv::Mat(
                         frame.size(),
                         CV_8UC3,
                         cv::Scalar(30, 30, 30)
                     );
-
-                    cachedLabel = "No visualization";
                 }
             }
-
-
-            // Update the point cloud using ONLY the last
-            // valid detection/segmentation foreground mask.
 
             if (
                 depthEstimator->hasResult() &&
                 !depthEstimator->getDepth().empty() &&
                 !persistentForegroundMask.empty()
-            ) {
-
+            )
+            {
                 pointCloudVisualizer.update(
                     frame,
                     depthEstimator->getDepth(),
@@ -588,14 +589,10 @@ int main(int argc, char* argv[]) {
                     pointCloudVisualizer.getVisualization();
             }
 
-
-            // Compose output.
-
             cv::Mat combined = createOutput(
                 frame,
                 cachedVisualization,
-                cachedPointCloud,
-                cachedLabel
+                cachedPointCloud
             );
 
             cv::imshow(
@@ -603,39 +600,41 @@ int main(int argc, char* argv[]) {
                 combined
             );
 
-
             const int key = cv::waitKey(1);
 
             if (
                 key == 27 ||
                 key == 'q' ||
                 key == 'Q'
-            ) {
+            )
+            {
                 running = false;
                 break;
             }
 
-            if (isWindowClosed()) {
+            if (isWindowClosed())
+            {
                 running = false;
                 break;
             }
-
-            ++frameIndex;
         }
-
 
         cap.release();
 
         cv::destroyAllWindows();
 
-        std::cout << "AdaptivePerception stopped!" << std::endl;
-
+        std::cout
+            << "AdaptivePerception stopped!"
+            << std::endl;
     }
-    catch (const std::exception& e) {
-
+    catch (const std::exception& e)
+    {
         cv::destroyAllWindows();
 
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr
+            << "Error: "
+            << e.what()
+            << std::endl;
 
         return 1;
     }

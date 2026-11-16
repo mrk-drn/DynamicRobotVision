@@ -1,4 +1,5 @@
 #include "estimators/ObjectDetectionEstimator.hpp"
+#include "estimators/ObjectDetectionKernels.cuh"
 
 #include <algorithm>
 #include <array>
@@ -6,18 +7,26 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
+#include <utility>
+
+#include <cuda_runtime.h>
 
 namespace {
 
-constexpr int INPUT_WIDTH = 640;
-constexpr int INPUT_HEIGHT = 640;
+constexpr int INPUT_WIDTH = 768;
+constexpr int INPUT_HEIGHT = 768;
 
 constexpr int NUM_CLASSES = 80;
 constexpr int NUM_DETECTIONS = 300;
 constexpr int NUM_VALUES = 6;
 
 constexpr float CONFIDENCE_THRESHOLD = 0.20f;
-constexpr float NMS_THRESHOLD = 0.45f;
+
+constexpr std::size_t INPUT_ELEMENTS =
+    3ULL * INPUT_WIDTH * INPUT_HEIGHT;
+
+constexpr std::size_t OUTPUT_ELEMENTS =
+    NUM_DETECTIONS * NUM_VALUES;
 
 const std::array<std::string, NUM_CLASSES> CLASS_NAMES = {
     "person", "bicycle", "car", "motorcycle",
@@ -47,8 +56,8 @@ const std::array<std::string, NUM_CLASSES> CLASS_NAMES = {
     "hair drier", "toothbrush"
 };
 
-const std::array<cv::Scalar, NUM_CLASSES>& getClassColors() {
-
+const std::array<cv::Scalar, NUM_CLASSES>& getClassColors()
+{
     static const std::array<cv::Scalar, NUM_CLASSES> colors = [] {
 
         std::array<cv::Scalar, NUM_CLASSES> result;
@@ -90,9 +99,26 @@ const std::array<cv::Scalar, NUM_CLASSES>& getClassColors() {
     return colors;
 }
 
+void checkCuda(
+    cudaError_t status,
+    const char* operation
+) {
+    if (status != cudaSuccess) {
+
+        throw std::runtime_error(
+            std::string(operation) +
+            ": " +
+            cudaGetErrorString(status)
+        );
+    }
+}
+
 struct Detection {
+
     cv::Rect box;
+
     int classId = -1;
+
     float confidence = 0.0f;
 };
 
@@ -101,13 +127,19 @@ struct Detection {
 ObjectDetectionEstimator::ObjectDetectionEstimator(
     const std::string& modelPath
 )
-    : env(ORT_LOGGING_LEVEL_WARNING, "AdaptivePerception"),
+    : env(
+        ORT_LOGGING_LEVEL_WARNING,
+        "AdaptivePerception"
+    ),
       session(nullptr)
 {
-    std::cout << "Loading object detection model: "
-              << modelPath << std::endl;
+    std::cout
+        << "Loading optimized object detection model: "
+        << modelPath
+        << std::endl;
 
-    const auto providers = Ort::GetAvailableProviders();
+    const auto providers =
+        Ort::GetAvailableProviders();
 
     const bool cudaAvailable =
         std::find(
@@ -117,6 +149,7 @@ ObjectDetectionEstimator::ObjectDetectionEstimator(
         ) != providers.end();
 
     if (!cudaAvailable) {
+
         throw std::runtime_error(
             "ONNX Runtime CUDAExecutionProvider unavailable."
         );
@@ -152,30 +185,111 @@ ObjectDetectionEstimator::ObjectDetectionEstimator(
     Ort::AllocatorWithDefaultOptions allocator;
 
     auto inputName =
-        session.GetInputNameAllocated(0, allocator);
+        session.GetInputNameAllocated(
+            0,
+            allocator
+        );
 
     auto outputName =
-        session.GetOutputNameAllocated(0, allocator);
+        session.GetOutputNameAllocated(
+            0,
+            allocator
+        );
 
     inputName_ = inputName.get();
     outputName_ = outputName.get();
 
-    std::cout << "Object detection model loaded."
-              << std::endl;
+    checkCuda(
+        cudaSetDevice(0),
+        "Selecting CUDA device"
+    );
 
-    std::cout << "ONNX Runtime: CUDA GPU 0"
-              << std::endl;
+    checkCuda(
+        cudaMalloc(
+            reinterpret_cast<void**>(&gpuInput_),
+            INPUT_ELEMENTS * sizeof(float)
+        ),
+        "Allocating persistent CUDA input"
+    );
+
+    std::cout
+        << "Object detection model loaded."
+        << std::endl;
+
+    std::cout
+        << "ONNX Runtime CUDA I/O Binding enabled."
+        << std::endl;
+
+    std::cout
+        << "Custom CUDA preprocessing enabled."
+        << std::endl;
 }
 
-PredictionType ObjectDetectionEstimator::type() const {
+ObjectDetectionEstimator::~ObjectDetectionEstimator()
+{
+    releaseGpuBuffers();
+}
+
+void ObjectDetectionEstimator::ensureGpuBuffers(
+    int width,
+    int height
+) {
+    const std::size_t required =
+        static_cast<std::size_t>(width) *
+        height * 3;
+
+    if (required <= gpuFrameCapacity_ && gpuFrame_) {
+        return;
+    }
+
+    if (gpuFrame_) {
+
+        checkCuda(
+            cudaFree(gpuFrame_),
+            "Freeing previous frame buffer"
+        );
+
+        gpuFrame_ = nullptr;
+    }
+
+    checkCuda(
+        cudaMalloc(
+            reinterpret_cast<void**>(&gpuFrame_),
+            required
+        ),
+        "Allocating CUDA frame buffer"
+    );
+
+    gpuFrameCapacity_ = required;
+}
+
+void ObjectDetectionEstimator::releaseGpuBuffers() noexcept
+{
+    if (gpuFrame_) {
+        cudaFree(gpuFrame_);
+        gpuFrame_ = nullptr;
+    }
+
+    if (gpuInput_) {
+        cudaFree(gpuInput_);
+        gpuInput_ = nullptr;
+    }
+
+    gpuFrameCapacity_ = 0;
+}
+
+PredictionType ObjectDetectionEstimator::type() const
+{
     return PredictionType::OBJECT_DETECTION;
 }
 
-std::string ObjectDetectionEstimator::name() const {
+std::string ObjectDetectionEstimator::name() const
+{
     return "Object Detection";
 }
 
-bool ObjectDetectionEstimator::hasResult() const {
+bool ObjectDetectionEstimator::hasResult() const
+{
     return !visualization_.empty();
 }
 
@@ -183,22 +297,42 @@ void ObjectDetectionEstimator::predict(
     const cv::Mat& frame
 ) {
     if (frame.empty()) {
+
         visualization_.release();
+
         return;
     }
 
-    // Letterbox preprocessing.
+    if (frame.channels() != 3 || frame.depth() != CV_8U) {
+        throw std::runtime_error(
+            "Object detection requires an 8-bit BGR frame."
+        );
+    }
+
+    checkCuda(
+        cudaSetDevice(0),
+        "Selecting CUDA device"
+    );
+
+    const int frameWidth = frame.cols;
+    const int frameHeight = frame.rows;
+
+    // Calculate letterbox dimensions.
 
     const double scale = std::min(
-        static_cast<double>(INPUT_WIDTH) / frame.cols,
-        static_cast<double>(INPUT_HEIGHT) / frame.rows
+        static_cast<double>(INPUT_WIDTH) / frameWidth,
+        static_cast<double>(INPUT_HEIGHT) / frameHeight
     );
 
     const int resizedWidth =
-        static_cast<int>(std::round(frame.cols * scale));
+        static_cast<int>(
+            std::round(frameWidth * scale)
+        );
 
     const int resizedHeight =
-        static_cast<int>(std::round(frame.rows * scale));
+        static_cast<int>(
+            std::round(frameHeight * scale)
+        );
 
     const int padLeft =
         (INPUT_WIDTH - resizedWidth) / 2;
@@ -206,46 +340,54 @@ void ObjectDetectionEstimator::predict(
     const int padTop =
         (INPUT_HEIGHT - resizedHeight) / 2;
 
-    const int padRight =
-        INPUT_WIDTH - resizedWidth - padLeft;
-
-    const int padBottom =
-        INPUT_HEIGHT - resizedHeight - padTop;
-
-    cv::Mat resized;
-
-    cv::resize(
-        frame,
-        resized,
-        cv::Size(resizedWidth, resizedHeight),
-        0,
-        0,
-        cv::INTER_LINEAR
+    ensureGpuBuffers(
+        frameWidth,
+        frameHeight
     );
 
-    cv::Mat letterboxed;
+    checkCuda(
+        cudaMemcpy2D(
+            gpuFrame_,
+            static_cast<std::size_t>(frameWidth) * 3,
+            frame.data,
+            frame.step,
+            static_cast<std::size_t>(frameWidth) * 3,
+            frameHeight,
+            cudaMemcpyHostToDevice
+        ),
+        "Uploading source frame"
+    );
 
-    cv::copyMakeBorder(
-        resized,
-        letterboxed,
-        padTop,
-        padBottom,
+    // Perform preprocessing on the GPU:
+    // BGR to RGB, resize, letterbox, normalize, and HWC to CHW.
+
+    launchDetectionPreprocess(
+        gpuFrame_,
+        frameWidth,
+        frameHeight,
+        static_cast<std::size_t>(frameWidth) * 3,
+
+        gpuInput_,
+
+        resizedWidth,
+        resizedHeight,
         padLeft,
-        padRight,
-        cv::BORDER_CONSTANT,
-        cv::Scalar(114, 114, 114)
+        padTop,
+
+        nullptr
     );
 
-    // Prepare input tensor.
+    checkCuda(
+        cudaGetLastError(),
+        "Launching preprocessing kernel"
+    );
 
-    cv::Mat blob = cv::dnn::blobFromImage(
-        letterboxed,
-        1.0 / 255.0,
-        cv::Size(INPUT_WIDTH, INPUT_HEIGHT),
-        cv::Scalar(),
-        true,
-        false,
-        CV_32F
+    // Ensure preprocessing finishes before ONNX Runtime
+    // consumes the GPU input buffer.
+
+    checkCuda(
+        cudaDeviceSynchronize(),
+        "Synchronizing preprocessing"
     );
 
     const int64_t inputShape[] = {
@@ -255,46 +397,58 @@ void ObjectDetectionEstimator::predict(
         INPUT_WIDTH
     };
 
-    Ort::MemoryInfo memoryInfo =
-        Ort::MemoryInfo::CreateCpu(
-            OrtArenaAllocator,
-            OrtMemTypeDefault
-        );
+    Ort::MemoryInfo cudaMemoryInfo(
+        "Cuda",
+        OrtAllocatorType::OrtDeviceAllocator,
+        0,
+        OrtMemTypeDefault
+    );
 
     Ort::Value inputTensor =
         Ort::Value::CreateTensor<float>(
-            memoryInfo,
-            blob.ptr<float>(),
-            blob.total(),
+            cudaMemoryInfo,
+            gpuInput_,
+            INPUT_ELEMENTS,
             inputShape,
             4
         );
 
-    // Run inference.
+    // Bind input and output directly to CUDA memory.
 
-    const char* inputNames[] = {
-        inputName_.c_str()
-    };
+    Ort::IoBinding binding(session);
 
-    const char* outputNames[] = {
-        outputName_.c_str()
-    };
-
-    auto outputs = session.Run(
-        Ort::RunOptions{nullptr},
-        inputNames,
-        &inputTensor,
-        1,
-        outputNames,
-        1
+    binding.BindInput(
+        inputName_.c_str(),
+        inputTensor
     );
 
-    // Validate output: [1, 300, 6].
+    binding.BindOutput(
+        outputName_.c_str(),
+        cudaMemoryInfo
+    );
+
+    binding.SynchronizeInputs();
+
+    session.Run(
+        Ort::RunOptions{nullptr},
+        binding
+    );
+
+    binding.SynchronizeOutputs();
+
+    auto outputs = binding.GetOutputValues();
+
+    if (outputs.empty()) {
+        throw std::runtime_error(
+            "Object detection returned no outputs."
+        );
+    }
 
     auto outputInfo =
         outputs[0].GetTensorTypeAndShapeInfo();
 
-    const auto outputShape = outputInfo.GetShape();
+    const auto outputShape =
+        outputInfo.GetShape();
 
     if (
         outputShape != std::vector<int64_t>{
@@ -307,37 +461,41 @@ void ObjectDetectionEstimator::predict(
     ) {
         throw std::runtime_error(
             "Unexpected detection output. "
-            "Expected [1, 300, 6] float tensor."
+            "Expected [1,300,6] float tensor."
         );
     }
 
-    const float* outputData =
-        outputs[0].GetTensorData<float>();
+    std::array<float, OUTPUT_ELEMENTS> outputData{};
 
-    // Decode detections.
-    //
-    // Format:
-    // [x1, y1, x2, y2, confidence, class_id]
-    //
-    // Coordinates are in model input pixels.
+    checkCuda(
+        cudaMemcpy(
+            outputData.data(),
+            outputs[0].GetTensorData<float>(),
+            OUTPUT_ELEMENTS * sizeof(float),
+            cudaMemcpyDeviceToHost
+        ),
+        "Downloading detection results"
+    );
 
-    std::vector<Detection> candidates;
+    // Decode detections. The model output is already filtered,
+    // so no additional NMS pass is required.
 
-    candidates.reserve(NUM_DETECTIONS);
+    std::vector<Detection> detections;
+
+    detections.reserve(NUM_DETECTIONS);
 
     for (int i = 0; i < NUM_DETECTIONS; ++i) {
 
-        const float* detection =
-            outputData + i * NUM_VALUES;
+        const float* values =
+            outputData.data() + i * NUM_VALUES;
 
-        const float x1 = detection[0];
-        const float y1 = detection[1];
-        const float x2 = detection[2];
-        const float y2 = detection[3];
+        const float x1 = values[0];
+        const float y1 = values[1];
+        const float x2 = values[2];
+        const float y2 = values[3];
 
-        const float confidence = detection[4];
-
-        const float classValue = detection[5];
+        const float confidence = values[4];
+        const float classValue = values[5];
 
         if (
             !std::isfinite(x1) ||
@@ -359,13 +517,16 @@ void ObjectDetectionEstimator::predict(
         }
 
         const int classId =
-            static_cast<int>(std::round(classValue));
+            static_cast<int>(
+                std::round(classValue)
+            );
 
-        if (classId < 0 || classId >= NUM_CLASSES) {
+        if (
+            classId < 0 ||
+            classId >= NUM_CLASSES
+        ) {
             continue;
         }
-
-        // Restore original frame coordinates.
 
         const float originalX1 =
             (x1 - padLeft) / scale;
@@ -382,25 +543,25 @@ void ObjectDetectionEstimator::predict(
         const int left = std::clamp(
             static_cast<int>(std::floor(originalX1)),
             0,
-            frame.cols
+            frameWidth
         );
 
         const int top = std::clamp(
             static_cast<int>(std::floor(originalY1)),
             0,
-            frame.rows
+            frameHeight
         );
 
         const int right = std::clamp(
             static_cast<int>(std::ceil(originalX2)),
             0,
-            frame.cols
+            frameWidth
         );
 
         const int bottom = std::clamp(
             static_cast<int>(std::ceil(originalY2)),
             0,
-            frame.rows
+            frameHeight
         );
 
         cv::Rect box(
@@ -414,78 +575,22 @@ void ObjectDetectionEstimator::predict(
             continue;
         }
 
-        candidates.push_back({
+        detections.push_back({
             box,
             classId,
             confidence
         });
     }
 
-    // Class-aware NMS.
-
-    std::vector<Detection> filtered;
-
-    filtered.reserve(candidates.size());
-
-    for (int classId = 0; classId < NUM_CLASSES; ++classId) {
-
-        std::vector<cv::Rect> boxes;
-        std::vector<float> scores;
-        std::vector<int> indices;
-
-        for (
-            int i = 0;
-            i < static_cast<int>(candidates.size());
-            ++i
-        ) {
-            if (candidates[i].classId == classId) {
-
-                boxes.push_back(candidates[i].box);
-                scores.push_back(candidates[i].confidence);
-                indices.push_back(i);
-            }
-        }
-
-        if (boxes.empty()) {
-            continue;
-        }
-
-        std::vector<int> kept;
-
-        cv::dnn::NMSBoxes(
-            boxes,
-            scores,
-            CONFIDENCE_THRESHOLD,
-            NMS_THRESHOLD,
-            kept
-        );
-
-        for (int index : kept) {
-            filtered.push_back(
-                candidates[indices[index]]
-            );
-        }
-    }
-
-    // Sort by confidence.
-
-    std::sort(
-        filtered.begin(),
-        filtered.end(),
-        [](const Detection& a, const Detection& b) {
-            return a.confidence > b.confidence;
-        }
-    );
-
-    // Draw detections.
+    // Draw detections on the original frame.
 
     visualization_ = frame.clone();
 
     const auto& colors = getClassColors();
 
-    for (const auto& detection : filtered) {
+    for (const auto& detection : detections) {
 
-        const cv::Scalar color =
+        const cv::Scalar& color =
             colors[detection.classId];
 
         cv::rectangle(
@@ -493,7 +598,7 @@ void ObjectDetectionEstimator::predict(
             detection.box,
             color,
             2,
-            cv::LINE_AA
+            cv::LINE_8
         );
 
         const std::string label =
@@ -501,14 +606,17 @@ void ObjectDetectionEstimator::predict(
             " " +
             cv::format("%.2f", detection.confidence);
 
+        constexpr double FONT_SCALE = 0.5;
+        constexpr int FONT_THICKNESS = 1;
+
         int baseline = 0;
 
         const cv::Size textSize =
             cv::getTextSize(
                 label,
                 cv::FONT_HERSHEY_SIMPLEX,
-                0.5,
-                1,
+                FONT_SCALE,
+                FONT_THICKNESS,
                 &baseline
             );
 
@@ -539,16 +647,16 @@ void ObjectDetectionEstimator::predict(
                 labelTop + textSize.height + 2
             ),
             cv::FONT_HERSHEY_SIMPLEX,
-            0.5,
+            FONT_SCALE,
             cv::Scalar(0, 0, 0),
-            1,
-            cv::LINE_AA
+            FONT_THICKNESS,
+            cv::LINE_8
         );
     }
 }
 
-cv::Mat ObjectDetectionEstimator::visualize() const {
-
+cv::Mat ObjectDetectionEstimator::visualize() const
+{
     if (visualization_.empty()) {
         return {};
     }

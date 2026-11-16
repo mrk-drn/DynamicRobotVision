@@ -1,22 +1,38 @@
-
 #include "estimators/DepthEstimator.hpp"
+#include "estimators/DepthKernels.cuh"
 
+#include <opencv2/dnn.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
-#include <algorithm>
-#include <vector>
-#include <cmath>
-#include <array>
 
-DepthEstimator::DepthEstimator(const std::string& modelPath)
-    : env(ORT_LOGGING_LEVEL_WARNING, "AdaptivePerception"),
+namespace {
+
+constexpr double NORMALIZATION_SCALE = 1.0 / 255.0;
+constexpr float DEPTH_PERCENTILE = 0.05f;
+constexpr int LETTERBOX_VALUE = 114;
+
+}
+
+DepthEstimator::DepthEstimator(
+    const std::string& modelPath
+)
+    : env(
+        ORT_LOGGING_LEVEL_WARNING,
+        "AdaptivePerception"
+    ),
       session(nullptr)
 {
-    std::cout << "Loading depth model: "
-              << modelPath << std::endl;
+    std::cout
+        << "Loading depth model: "
+        << modelPath
+        << std::endl;
 
-    // Verify CUDA provider.
-    const auto providers = Ort::GetAvailableProviders();
+    const auto providers =
+        Ort::GetAvailableProviders();
 
     const bool cudaAvailable =
         std::find(
@@ -27,158 +43,190 @@ DepthEstimator::DepthEstimator(const std::string& modelPath)
 
     if (!cudaAvailable) {
         throw std::runtime_error(
-            "CUDAExecutionProvider is unavailable."
+            "ONNX Runtime CUDAExecutionProvider unavailable."
         );
     }
 
-    // Configure ONNX Runtime.
-    Ort::SessionOptions sessionOptions;
+    Ort::SessionOptions options;
 
-    sessionOptions.SetGraphOptimizationLevel(
+    options.SetGraphOptimizationLevel(
         GraphOptimizationLevel::ORT_ENABLE_ALL
     );
 
-    sessionOptions.SetExecutionMode(
+    options.SetExecutionMode(
         ExecutionMode::ORT_SEQUENTIAL
     );
 
-    sessionOptions.SetIntraOpNumThreads(1);
-    sessionOptions.SetInterOpNumThreads(1);
+    options.SetIntraOpNumThreads(1);
+    options.SetInterOpNumThreads(1);
 
     OrtCUDAProviderOptions cudaOptions{};
 
     cudaOptions.device_id = 0;
 
-    sessionOptions.AppendExecutionProvider_CUDA(
+    cudaOptions.cudnn_conv_algo_search =
+        OrtCudnnConvAlgoSearchHeuristic;
+
+    cudaOptions.do_copy_in_default_stream = 1;
+
+    options.AppendExecutionProvider_CUDA(
         cudaOptions
     );
 
-    // Load model.
     session = Ort::Session(
         env,
         modelPath.c_str(),
-        sessionOptions
+        options
     );
 
-    // Cache tensor names.
     Ort::AllocatorWithDefaultOptions allocator;
 
-    auto inputNameAllocated =
-        session.GetInputNameAllocated(0, allocator);
+    auto inputName =
+        session.GetInputNameAllocated(
+            0,
+            allocator
+        );
 
-    auto outputNameAllocated =
-        session.GetOutputNameAllocated(0, allocator);
+    auto outputName =
+        session.GetOutputNameAllocated(
+            0,
+            allocator
+        );
 
-    inputName_ = inputNameAllocated.get();
-    outputName_ = outputNameAllocated.get();
+    inputName_ = inputName.get();
+    outputName_ = outputName.get();
 
-    std::cout << "Depth model loaded successfully!"
-              << std::endl;
+    letterboxed_.create(
+        INPUT_HEIGHT,
+        INPUT_WIDTH,
+        CV_8UC3
+    );
 
-    std::cout << "Execution Provider: CUDA (GPU 0)"
-              << std::endl;
+    blob_.create(
+        1,
+        static_cast<int>(INPUT_ELEMENTS),
+        CV_32F
+    );
+
+    std::cout
+        << "Depth model loaded."
+        << std::endl;
+
+    std::cout
+        << "ONNX Runtime: CUDA GPU 0"
+        << std::endl;
+
+    std::cout
+        << "Depth CUDA post-processing enabled."
+        << std::endl;
 }
 
-void DepthEstimator::predict(const cv::Mat& frame)
-{
+void DepthEstimator::predict(
+    const cv::Mat& frame
+) {
     if (frame.empty()) {
         depthResult_.release();
         depthVisualization_.release();
+
+        nearestDistanceCache_ = -1.0f;
+        nearestDistanceValid_ = false;
+
         return;
     }
 
-    // Letterbox preprocessing.
+    if (frame.type() != CV_8UC3) {
+        throw std::runtime_error(
+            "DepthEstimator expects CV_8UC3 BGR frames."
+        );
+    }
+
     const double scale = std::min(
-        static_cast<double>(inputWidth) / frame.cols,
-        static_cast<double>(inputHeight) / frame.rows
+        static_cast<double>(INPUT_WIDTH) / frame.cols,
+        static_cast<double>(INPUT_HEIGHT) / frame.rows
     );
 
-    const int resizedWidth =
-        static_cast<int>(std::round(frame.cols * scale));
+    const int resizedWidth = std::clamp(
+        static_cast<int>(
+            std::round(frame.cols * scale)
+        ),
+        1,
+        INPUT_WIDTH
+    );
 
-    const int resizedHeight =
-        static_cast<int>(std::round(frame.rows * scale));
+    const int resizedHeight = std::clamp(
+        static_cast<int>(
+            std::round(frame.rows * scale)
+        ),
+        1,
+        INPUT_HEIGHT
+    );
 
     const int padLeft =
-        (inputWidth - resizedWidth) / 2;
-
-    const int padRight =
-        inputWidth - resizedWidth - padLeft;
+        (INPUT_WIDTH - resizedWidth) / 2;
 
     const int padTop =
-        (inputHeight - resizedHeight) / 2;
+        (INPUT_HEIGHT - resizedHeight) / 2;
+
+    const int padRight =
+        INPUT_WIDTH - resizedWidth - padLeft;
 
     const int padBottom =
-        inputHeight - resizedHeight - padTop;
-
-    cv::Mat resized;
+        INPUT_HEIGHT - resizedHeight - padTop;
 
     cv::resize(
         frame,
-        resized,
-        cv::Size(resizedWidth, resizedHeight),
+        resized_,
+        cv::Size(
+            resizedWidth,
+            resizedHeight
+        ),
         0,
         0,
         cv::INTER_LINEAR
     );
 
-    cv::Mat letterboxed;
-
-    cv::copyMakeBorder(
-        resized,
-        letterboxed,
-        padTop,
-        padBottom,
-        padLeft,
-        padRight,
-        cv::BORDER_CONSTANT,
-        cv::Scalar(114, 114, 114)
+    letterboxed_.setTo(
+        cv::Scalar(
+            LETTERBOX_VALUE,
+            LETTERBOX_VALUE,
+            LETTERBOX_VALUE
+        )
     );
 
-    // Validate preprocessing dimensions.
-    if (
-        letterboxed.cols != inputWidth ||
-        letterboxed.rows != inputHeight
-    ) {
-        throw std::runtime_error(
-            "Incorrect letterbox dimensions."
-        );
-    }
+    resized_.copyTo(
+        letterboxed_(
+            cv::Rect(
+                padLeft,
+                padTop,
+                resizedWidth,
+                resizedHeight
+            )
+        )
+    );
 
-    // Prepare input tensor.
-    cv::Mat blob = cv::dnn::blobFromImage(
-        letterboxed,
-        1.0 / 255.0,
-        cv::Size(inputWidth, inputHeight),
+    cv::dnn::blobFromImage(
+        letterboxed_,
+        blob_,
+        NORMALIZATION_SCALE,
+        cv::Size(
+            INPUT_WIDTH,
+            INPUT_HEIGHT
+        ),
         cv::Scalar(),
         true,
         false,
         CV_32F
     );
 
-    const std::array<int64_t, 4> inputShape = {
-        1,
-        3,
-        inputHeight,
-        inputWidth
-    };
-
-    Ort::MemoryInfo memoryInfo =
-        Ort::MemoryInfo::CreateCpu(
-            OrtArenaAllocator,
-            OrtMemTypeDefault
-        );
-
     Ort::Value inputTensor =
         Ort::Value::CreateTensor<float>(
-            memoryInfo,
-            blob.ptr<float>(),
-            blob.total(),
-            inputShape.data(),
-            inputShape.size()
+            memoryInfo_,
+            blob_.ptr<float>(),
+            INPUT_ELEMENTS,
+            inputShape_,
+            4
         );
 
-    // Run ONNX inference on CUDA.
     const char* inputNames[] = {
         inputName_.c_str()
     };
@@ -187,7 +235,7 @@ void DepthEstimator::predict(const cv::Mat& frame)
         outputName_.c_str()
     };
 
-    auto outputTensors = session.Run(
+    auto outputs = session.Run(
         Ort::RunOptions{nullptr},
         inputNames,
         &inputTensor,
@@ -196,20 +244,24 @@ void DepthEstimator::predict(const cv::Mat& frame)
         1
     );
 
-    // Validate model output.
-    auto& outputTensor = outputTensors.front();
+    if (outputs.empty()) {
+        throw std::runtime_error(
+            "Depth model returned no output."
+        );
+    }
 
     auto outputInfo =
-        outputTensor.GetTensorTypeAndShapeInfo();
+        outputs[0].GetTensorTypeAndShapeInfo();
 
-    const auto outputShape = outputInfo.GetShape();
+    const auto outputShape =
+        outputInfo.GetShape();
 
     if (
         outputShape.size() != 4 ||
         outputShape[0] != 1 ||
         outputShape[1] != 1 ||
-        outputShape[2] != inputHeight ||
-        outputShape[3] != inputWidth ||
+        outputShape[2] != INPUT_HEIGHT ||
+        outputShape[3] != INPUT_WIDTH ||
         outputInfo.GetElementType() !=
             ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
     ) {
@@ -218,18 +270,16 @@ void DepthEstimator::predict(const cv::Mat& frame)
         );
     }
 
-    // Access output without cloning.
     const float* outputData =
-        outputTensor.GetTensorData<float>();
+        outputs[0].GetTensorData<float>();
 
     cv::Mat depthModel(
-        inputHeight,
-        inputWidth,
+        INPUT_HEIGHT,
+        INPUT_WIDTH,
         CV_32F,
         const_cast<float*>(outputData)
     );
 
-    // Remove letterbox padding.
     const cv::Rect validRegion(
         padLeft,
         padTop,
@@ -240,17 +290,18 @@ void DepthEstimator::predict(const cv::Mat& frame)
     cv::Mat croppedDepth =
         depthModel(validRegion);
 
-    // Restore original frame dimensions.
     cv::resize(
         croppedDepth,
         depthResult_,
         frame.size(),
-        0,
-        0,
+        0.0,
+        0.0,
         cv::INTER_LINEAR
     );
 
-    // Generate grayscale visualization.
+    nearestDistanceValid_ = false;
+    nearestDistanceCache_ = -1.0f;
+
     cv::Mat normalized;
 
     cv::normalize(
@@ -297,46 +348,18 @@ float DepthEstimator::nearestDistanceMeters() const
         return -1.0f;
     }
 
-    // Reuse allocated memory between calls.
-    static thread_local std::vector<float> values;
-
-    values.clear();
-
-    if (values.capacity() < depthResult_.total()) {
-        values.reserve(depthResult_.total());
+    if (nearestDistanceValid_) {
+        return nearestDistanceCache_;
     }
 
-    // Collect valid depth values.
-    for (int y = 0; y < depthResult_.rows; ++y) {
+    nearestDistanceCache_ =
+        DepthKernels::calculateNearestPercentile(
+            depthResult_.ptr<float>(),
+            depthResult_.total(),
+            DEPTH_PERCENTILE
+        );
 
-        const float* row =
-            depthResult_.ptr<float>(y);
+    nearestDistanceValid_ = true;
 
-        for (int x = 0; x < depthResult_.cols; ++x) {
-
-            const float value = row[x];
-
-            if (
-                std::isfinite(value) &&
-                value > 0.0f
-            ) {
-                values.push_back(value);
-            }
-        }
-    }
-
-    if (values.empty()) {
-        return -1.0f;
-    }
-
-    // Calculate 5th percentile.
-    const size_t index = values.size() / 20;
-
-    std::nth_element(
-        values.begin(),
-        values.begin() + index,
-        values.end()
-    );
-
-    return values[index];
+    return nearestDistanceCache_;
 }

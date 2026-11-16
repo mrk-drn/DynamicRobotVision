@@ -1,24 +1,22 @@
-
 #include "estimators/SegmentationEstimator.hpp"
 
+#include <cuda_runtime.h>
+
 #include <opencv2/dnn.hpp>
-#include <opencv2/core/cuda.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudaimgproc.hpp>
-#include <opencv2/cudawarping.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
-#include <cstring>
+#include <utility>
 
 namespace {
 
-constexpr int INPUT_WIDTH = 640;
-constexpr int INPUT_HEIGHT = 640;
+constexpr int INPUT_WIDTH = 768;
+constexpr int INPUT_HEIGHT = 768;
 
 constexpr int NUM_CLASSES = 80;
 constexpr int NUM_MASK_COEFFS = 32;
@@ -26,80 +24,99 @@ constexpr int NUM_MASK_COEFFS = 32;
 constexpr int NUM_FEATURES =
     4 + NUM_CLASSES + NUM_MASK_COEFFS;
 
-constexpr int NUM_PREDICTIONS = 8400;
+constexpr int NUM_PREDICTIONS = 12096;
 
-constexpr int MASK_WIDTH = 160;
-constexpr int MASK_HEIGHT = 160;
+constexpr int MASK_WIDTH = 192;
+constexpr int MASK_HEIGHT = 192;
 
-constexpr int MASK_SIZE =
-    MASK_WIDTH * MASK_HEIGHT;
-
-constexpr float CONFIDENCE_THRESHOLD = 0.05f;
+constexpr float CONFIDENCE_SCORE = 0.05f;
 constexpr float MASK_THRESHOLD = 0.6f;
 constexpr float MASK_OPACITY = 0.5f;
 
 constexpr float NMS_THRESHOLD = 0.90f;
 
-const std::array<cv::Scalar, NUM_CLASSES>& getClassColors()
-{
-    static const std::array<cv::Scalar, NUM_CLASSES> colors = [] {
-        std::array<cv::Scalar, NUM_CLASSES> result;
+constexpr int MAX_CANDIDATES = NUM_PREDICTIONS;
 
-        for (int i = 0; i < NUM_CLASSES; ++i) {
+const std::array<cv::Scalar, NUM_CLASSES>&
+getClassColors()
+{
+    static const std::array<cv::Scalar, NUM_CLASSES> colors =
+        [] {
+
+            std::array<cv::Scalar, NUM_CLASSES> result;
+
             cv::Mat hsv(
-                1, 1,
-                CV_8UC3,
-                cv::Scalar(
-                    (i * 137) % 180,
-                    170,
-                    175
-                )
+                1,
+                1,
+                CV_8UC3
             );
 
             cv::Mat bgr;
 
-            cv::cvtColor(
-                hsv,
-                bgr,
-                cv::COLOR_HSV2BGR
-            );
+            for (int i = 0; i < NUM_CLASSES; ++i) {
 
-            const cv::Vec3b color =
-                bgr.at<cv::Vec3b>(0, 0);
+                hsv.at<cv::Vec3b>(0, 0) =
+                    cv::Vec3b(
+                        static_cast<unsigned char>(
+                            (i * 137) % 180
+                        ),
+                        170,
+                        175
+                    );
 
-            result[i] = cv::Scalar(
-                color[0],
-                color[1],
-                color[2]
-            );
-        }
+                cv::cvtColor(
+                    hsv,
+                    bgr,
+                    cv::COLOR_HSV2BGR
+                );
 
-        return result;
-    }();
+                const cv::Vec3b color =
+                    bgr.at<cv::Vec3b>(0, 0);
+
+                result[i] = cv::Scalar(
+                    color[0],
+                    color[1],
+                    color[2]
+                );
+            }
+
+            return result;
+        }();
 
     return colors;
 }
 
 struct Instance {
+
     cv::Rect box;
+
     int classId = -1;
+
     float confidence = 0.0f;
 
-    std::array<float, NUM_MASK_COEFFS> coefficients{};
+    std::array<float, NUM_MASK_COEFFS>
+        coefficients{};
 };
 
-}
+} // namespace
+
 
 SegmentationEstimator::SegmentationEstimator(
     const std::string& modelPath
 )
-    : env(ORT_LOGGING_LEVEL_WARNING, "AdaptivePerception"),
-      session(nullptr)
+    : env(
+        ORT_LOGGING_LEVEL_WARNING,
+        "AdaptivePerception"
+    ),
+    session(nullptr)
 {
-    std::cout << "Loading segmentation model: "
-              << modelPath << std::endl;
+    std::cout
+        << "Loading segmentation model: "
+        << modelPath
+        << std::endl;
 
-    const auto providers = Ort::GetAvailableProviders();
+    const auto providers =
+        Ort::GetAvailableProviders();
 
     const bool cudaAvailable =
         std::find(
@@ -131,6 +148,8 @@ SegmentationEstimator::SegmentationEstimator(
 
     cudaOptions.device_id = 0;
 
+    // ONNX Runtime CUDA inference.
+
     sessionOptions.AppendExecutionProvider_CUDA(
         cudaOptions
     );
@@ -141,82 +160,125 @@ SegmentationEstimator::SegmentationEstimator(
         sessionOptions
     );
 
-    std::cout << "Segmentation model loaded." << std::endl;
-    std::cout << "ONNX Runtime: CUDA GPU 0" << std::endl;
+    std::cout
+        << "Segmentation model loaded."
+        << std::endl;
 
-    const int cudaDevices =
-        cv::cuda::getCudaEnabledDeviceCount();
+    std::cout
+        << "ONNX Runtime: CUDA GPU 0"
+        << std::endl;
 
-    if (cudaDevices <= 0) {
+    // Initialize CUDA device for custom kernels.
+
+    const cudaError_t cudaStatus =
+        cudaSetDevice(0);
+
+    if (cudaStatus != cudaSuccess) {
         throw std::runtime_error(
-            "OpenCV CUDA is unavailable. "
-            "Build OpenCV with CUDA support."
+            std::string(
+                "Could not initialize CUDA GPU 0: "
+            ) +
+            cudaGetErrorString(cudaStatus)
         );
     }
 
-    cv::cuda::setDevice(0);
+    std::cout
+        << "Custom CUDA segmentation kernels initialized."
+        << std::endl;
 
-    std::cout << "OpenCV CUDA: GPU 0" << std::endl;
-    std::cout << "CUDA segmentation post-processing enabled."
-              << std::endl;
+    std::cout
+        << "Batched mask generation enabled."
+        << std::endl;
+
+    std::cout
+        << "GPU mask composition and blending enabled."
+        << std::endl;
 }
+
 
 PredictionType SegmentationEstimator::type() const
 {
     return PredictionType::SEGMENTATION;
 }
 
+
 std::string SegmentationEstimator::name() const
 {
     return "Segmentation";
 }
+
 
 bool SegmentationEstimator::hasResult() const
 {
     return !visualization_.empty();
 }
 
-void SegmentationEstimator::predict(const cv::Mat& frame)
-{
+
+void SegmentationEstimator::predict(
+    const cv::Mat& frame
+) {
     if (frame.empty()) {
+
         visualization_.release();
         segmentationMask_.release();
+
         return;
     }
 
-    const double scale = std::min(
-        static_cast<double>(INPUT_WIDTH) / frame.cols,
-        static_cast<double>(INPUT_HEIGHT) / frame.rows
+    if (frame.type() != CV_8UC3) {
+        throw std::runtime_error(
+            "SegmentationEstimator expects CV_8UC3 input."
+        );
+    }
+
+    // Calculate letterbox dimensions.
+
+    const float scale = static_cast<float>(
+        std::min(
+            static_cast<double>(INPUT_WIDTH) / frame.cols,
+            static_cast<double>(INPUT_HEIGHT) / frame.rows
+        )
     );
 
     const int resizedWidth =
-        static_cast<int>(std::round(frame.cols * scale));
+        static_cast<int>(
+            std::round(frame.cols * scale)
+        );
 
     const int resizedHeight =
-        static_cast<int>(std::round(frame.rows * scale));
+        static_cast<int>(
+            std::round(frame.rows * scale)
+        );
+
+    const int padLeft =
+        (INPUT_WIDTH - resizedWidth) / 2;
+
+    const int padTop =
+        (INPUT_HEIGHT - resizedHeight) / 2;
+
+    const int padRight =
+        INPUT_WIDTH - resizedWidth - padLeft;
+
+    const int padBottom =
+        INPUT_HEIGHT - resizedHeight - padTop;
+
+    // Resize input.
 
     cv::Mat resized;
 
     cv::resize(
         frame,
         resized,
-        cv::Size(resizedWidth, resizedHeight),
-        0,
-        0,
+        cv::Size(
+            resizedWidth,
+            resizedHeight
+        ),
+        0.0,
+        0.0,
         cv::INTER_LINEAR
     );
 
-    const int padLeft =
-        (INPUT_WIDTH - resizedWidth) / 2;
-
-    const int padRight =
-        INPUT_WIDTH - resizedWidth - padLeft;
-
-    const int padTop =
-        (INPUT_HEIGHT - resizedHeight) / 2;
-
-    const int padBottom =
-        INPUT_HEIGHT - resizedHeight - padTop;
+    // Letterbox input.
 
     cv::Mat letterboxed;
 
@@ -228,18 +290,29 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
         padLeft,
         padRight,
         cv::BORDER_CONSTANT,
-        cv::Scalar(114, 114, 114)
+        cv::Scalar(
+            114,
+            114,
+            114
+        )
     );
+
+    // Convert input into NCHW float blob.
 
     cv::Mat blob = cv::dnn::blobFromImage(
         letterboxed,
         1.0 / 255.0,
-        cv::Size(INPUT_WIDTH, INPUT_HEIGHT),
+        cv::Size(
+            INPUT_WIDTH,
+            INPUT_HEIGHT
+        ),
         cv::Scalar(),
         true,
         false,
         CV_32F
     );
+
+    // Create ONNX input tensor.
 
     const int64_t inputShape[] = {
         1,
@@ -280,6 +353,8 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
         "output1"
     };
 
+    // Run ONNX inference.
+
     auto outputs = session.Run(
         Ort::RunOptions{nullptr},
         inputNames,
@@ -288,6 +363,8 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
         outputNames,
         2
     );
+
+    // Validate detection output.
 
     auto detectionInfo =
         outputs[0].GetTensorTypeAndShapeInfo();
@@ -311,6 +388,8 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
 
     const float* detections =
         outputs[0].GetTensorData<float>();
+
+    // Validate prototype output.
 
     auto prototypeInfo =
         outputs[1].GetTensorTypeAndShapeInfo();
@@ -336,21 +415,31 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
     const float* prototypes =
         outputs[1].GetTensorData<float>();
 
+    // Decode detections.
+
     std::vector<Instance> instances;
 
-    instances.reserve(512);
+    instances.reserve(MAX_CANDIDATES);
 
     for (int i = 0; i < NUM_PREDICTIONS; ++i) {
-        const float cx = detections[i];
+
+        const float cx =
+            detections[i];
 
         const float cy =
-            detections[NUM_PREDICTIONS + i];
+            detections[
+                NUM_PREDICTIONS + i
+            ];
 
         const float w =
-            detections[2 * NUM_PREDICTIONS + i];
+            detections[
+                2 * NUM_PREDICTIONS + i
+            ];
 
         const float h =
-            detections[3 * NUM_PREDICTIONS + i];
+            detections[
+                3 * NUM_PREDICTIONS + i
+            ];
 
         if (
             !std::isfinite(cx) ||
@@ -362,6 +451,8 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
         ) {
             continue;
         }
+
+        // Convert letterbox coordinates to frame coordinates.
 
         const float x1 =
             (cx - w * 0.5f - padLeft) / scale;
@@ -399,7 +490,7 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
             frame.rows
         );
 
-        cv::Rect box(
+        const cv::Rect box(
             left,
             top,
             right - left,
@@ -410,15 +501,19 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
             continue;
         }
 
+        // Decode class confidence scores.
+
         for (int c = 0; c < NUM_CLASSES; ++c) {
+
             const float score =
                 detections[
-                    (4 + c) * NUM_PREDICTIONS + i
+                    (4 + c) *
+                    NUM_PREDICTIONS + i
                 ];
 
             if (
                 !std::isfinite(score) ||
-                score < CONFIDENCE_THRESHOLD
+                score < CONFIDENCE_SCORE
             ) {
                 continue;
             }
@@ -429,7 +524,10 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
             instance.classId = c;
             instance.confidence = score;
 
+            // Copy all 32 mask coefficients.
+
             for (int m = 0; m < NUM_MASK_COEFFS; ++m) {
+
                 instance.coefficients[m] =
                     detections[
                         (4 + NUM_CLASSES + m) *
@@ -437,29 +535,47 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
                     ];
             }
 
-            instances.push_back(std::move(instance));
+            instances.push_back(
+                std::move(instance)
+            );
         }
     }
+
+
+    // Class-wise Non-Maximum Suppression.
 
     std::vector<Instance> filteredInstances;
 
     filteredInstances.reserve(instances.size());
 
-    for (int classId = 0; classId < NUM_CLASSES; ++classId) {
+    for (int classId = 0;
+         classId < NUM_CLASSES;
+         ++classId) {
+
         std::vector<cv::Rect> boxes;
         std::vector<float> scores;
         std::vector<int> indices;
+
+        boxes.reserve(instances.size() / NUM_CLASSES + 1);
+        scores.reserve(instances.size() / NUM_CLASSES + 1);
+        indices.reserve(instances.size() / NUM_CLASSES + 1);
 
         for (
             int i = 0;
             i < static_cast<int>(instances.size());
             ++i
         ) {
-            if (instances[i].classId == classId) {
-                boxes.push_back(instances[i].box);
-                scores.push_back(instances[i].confidence);
-                indices.push_back(i);
+
+            const Instance& instance =
+                instances[i];
+
+            if (instance.classId != classId) {
+                continue;
             }
+
+            boxes.push_back(instance.box);
+            scores.push_back(instance.confidence);
+            indices.push_back(i);
         }
 
         if (boxes.empty()) {
@@ -471,25 +587,35 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
         cv::dnn::NMSBoxes(
             boxes,
             scores,
-            CONFIDENCE_THRESHOLD,
+            CONFIDENCE_SCORE,
             NMS_THRESHOLD,
             kept
         );
 
-        for (int index : kept) {
+        for (const int index : kept) {
+
             filteredInstances.push_back(
-                std::move(instances[indices[index]])
+                std::move(
+                    instances[indices[index]]
+                )
             );
         }
     }
 
+    // Sort by descending confidence.
+
     std::sort(
         filteredInstances.begin(),
         filteredInstances.end(),
-        [](const Instance& a, const Instance& b) {
+        [](
+            const Instance& a,
+            const Instance& b
+        ) {
             return a.confidence > b.confidence;
         }
     );
+
+    // Initialize empty segmentation output.
 
     segmentationMask_ = cv::Mat(
         frame.size(),
@@ -498,178 +624,88 @@ void SegmentationEstimator::predict(const cv::Mat& frame)
     );
 
     if (filteredInstances.empty()) {
+
         visualization_ = frame.clone();
+
         return;
     }
 
-    cv::Mat prototypeMatrix(
+    const int instanceCount =
+        static_cast<int>(
+            filteredInstances.size()
+        );
+
+    // Prepare all instance coefficients in one contiguous matrix.
+
+    cv::Mat coefficientMatrix(
+        instanceCount,
         NUM_MASK_COEFFS,
-        MASK_SIZE,
-        CV_32F,
-        const_cast<float*>(prototypes)
+        CV_32FC1
     );
 
-    cv::cuda::GpuMat gpuPrototypes;
+    std::vector<cv::Vec4i> boxes;
 
-    gpuPrototypes.upload(prototypeMatrix);
+    std::vector<cv::Vec3f> colors;
 
-    cv::cuda::GpuMat gpuFrame;
+    boxes.reserve(instanceCount);
+    colors.reserve(instanceCount);
 
-    gpuFrame.upload(frame);
+    const auto& classColors =
+        getClassColors();
 
-    cv::cuda::GpuMat gpuColorLayer;
+    for (int i = 0; i < instanceCount; ++i) {
 
-    gpuFrame.copyTo(gpuColorLayer);
+        const Instance& instance =
+            filteredInstances[i];
 
-    cv::cuda::GpuMat gpuCombinedMask(
-        frame.size(),
-        CV_8UC1,
-        cv::Scalar(0)
-    );
+        // Coefficients.
 
-    cv::cuda::GpuMat gpuVisualization;
-
-    gpuFrame.copyTo(gpuVisualization);
-
-    cv::cuda::GpuMat gpuMaskLogits;
-    cv::cuda::GpuMat gpuProbabilities;
-    cv::cuda::GpuMat gpuFullMask;
-    cv::cuda::GpuMat gpuCroppedMask;
-    cv::cuda::GpuMat gpuOriginalMask;
-    cv::cuda::GpuMat gpuBinaryMask;
-
-    cv::cuda::GpuMat gpuColorROI;
-    cv::cuda::GpuMat gpuCombinedROI;
-
-    const auto& classColors = getClassColors();
-
-    for (const auto& instance : filteredInstances) {
-        cv::Mat coefficients(
-            1,
-            NUM_MASK_COEFFS,
-            CV_32F,
-            const_cast<float*>(
-                instance.coefficients.data()
-            )
+        std::copy(
+            instance.coefficients.begin(),
+            instance.coefficients.end(),
+            coefficientMatrix.ptr<float>(i)
         );
 
-        cv::cuda::GpuMat gpuCoefficients;
+        // Bounding boxes.
 
-        gpuCoefficients.upload(coefficients);
-
-        cv::cuda::GpuMat gpuMaskLogitsFlat;
-
-        cv::cuda::gemm(
-            gpuCoefficients,
-            gpuPrototypes,
-            1.0,
-            cv::cuda::GpuMat(),
-            0.0,
-            gpuMaskLogitsFlat
+        boxes.emplace_back(
+            instance.box.x,
+            instance.box.y,
+            instance.box.width,
+            instance.box.height
         );
 
-        gpuMaskLogits = gpuMaskLogitsFlat.reshape(
-            1,
-            MASK_HEIGHT
-        );
+        // BGR colors.
 
-        cv::cuda::GpuMat gpuNegativeMaskLogits;
+        const cv::Scalar& color =
+            classColors[instance.classId];
 
-        cv::cuda::multiply(
-            gpuMaskLogits,
-            cv::Scalar::all(-1.0),
-            gpuNegativeMaskLogits
-        );
-
-        cv::cuda::exp(
-            gpuNegativeMaskLogits,
-            gpuProbabilities
-        );
-
-        cv::cuda::add(
-            gpuProbabilities,
-            cv::Scalar(1.0),
-            gpuProbabilities
-        );
-
-        cv::cuda::divide(
-            cv::Scalar(1.0),
-            gpuProbabilities,
-            gpuProbabilities
-        );
-
-        cv::cuda::resize(
-            gpuProbabilities,
-            gpuFullMask,
-            cv::Size(INPUT_WIDTH, INPUT_HEIGHT),
-            0.0,
-            0.0,
-            cv::INTER_LINEAR
-        );
-
-        gpuCroppedMask = gpuFullMask(
-            cv::Rect(
-                padLeft,
-                padTop,
-                resizedWidth,
-                resizedHeight
-            )
-        );
-
-        cv::cuda::resize(
-            gpuCroppedMask,
-            gpuOriginalMask,
-            frame.size(),
-            0.0,
-            0.0,
-            cv::INTER_LINEAR
-        );
-
-        cv::cuda::GpuMat gpuInstanceROI =
-            gpuOriginalMask(instance.box);
-
-        cv::cuda::compare(
-            gpuInstanceROI,
-            cv::Scalar(MASK_THRESHOLD),
-            gpuBinaryMask,
-            cv::CMP_GT
-        );
-
-        gpuColorROI = gpuColorLayer(instance.box);
-
-        gpuColorROI.setTo(
-            classColors[instance.classId],
-            gpuBinaryMask
-        );
-
-        gpuCombinedROI = gpuCombinedMask(instance.box);
-
-        gpuCombinedROI.setTo(
-            cv::Scalar(255),
-            gpuBinaryMask
+        colors.emplace_back(
+            static_cast<float>(color[0]),
+            static_cast<float>(color[1]),
+            static_cast<float>(color[2])
         );
     }
 
-    cv::cuda::GpuMat gpuBlended;
+    // Execute the complete batched CUDA pipeline.
 
-    cv::cuda::addWeighted(
-        gpuFrame,
-        1.0 - MASK_OPACITY,
-        gpuColorLayer,
+    cudaProcessor_.process(
+        frame,
+        prototypes,
+        coefficientMatrix,
+        boxes,
+        colors,
+        resizedWidth,
+        resizedHeight,
+        padLeft,
+        padTop,
+        MASK_THRESHOLD,
         MASK_OPACITY,
-        0.0,
-        gpuBlended
+        visualization_,
+        segmentationMask_
     );
-
-    gpuBlended.copyTo(
-        gpuVisualization,
-        gpuCombinedMask
-    );
-
-    gpuVisualization.download(visualization_);
-
-    gpuCombinedMask.download(segmentationMask_);
 }
+
 
 cv::Mat SegmentationEstimator::visualize() const
 {
@@ -679,6 +715,7 @@ cv::Mat SegmentationEstimator::visualize() const
 
     return visualization_.clone();
 }
+
 
 cv::Mat SegmentationEstimator::getSegmentationMask() const
 {

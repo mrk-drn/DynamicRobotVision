@@ -1,11 +1,15 @@
-
 cmake_minimum_required(VERSION 3.17)
 
-project(AdaptivePerception LANGUAGES CXX)
+project(AdaptivePerception LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+find_package(CUDAToolkit REQUIRED)
 
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 
@@ -23,6 +27,7 @@ find_package(OpenCV REQUIRED COMPONENTS
 )
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+message(STATUS "CUDA Toolkit: ${CUDAToolkit_VERSION}")
 
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -83,13 +88,20 @@ find_library(CUDNN_LIBRARY
 
 set(SOURCES
     src/main.cpp
+
     src/core/PredictionManager.cpp
+
     src/estimators/MotionEstimator.cpp
     src/estimators/DepthEstimator.cpp
+    src/estimators/DepthKernels.cu
     src/estimators/SegmentationEstimator.cpp
+    src/estimators/SegmentationKernels.cu
     src/estimators/ObjectDetectionEstimator.cpp
+    src/estimators/ObjectDetectionKernels.cu
+
     src/visualization/Visualizer.cpp
     src/visualization/PointCloudVisualizer.cpp
+    src/visualization/PointCloudKernels.cu
 )
 
 add_executable(AdaptiveRobotVision ${SOURCES})
@@ -103,21 +115,28 @@ target_include_directories(AdaptiveRobotVision PRIVATE
 target_link_libraries(AdaptiveRobotVision PRIVATE
     Eigen3::Eigen
     ${OpenCV_LIBS}
+
     ONNXRuntime::ONNXRuntime
     ${CUDNN_LIBRARY}
+
+    CUDA::cudart
+
     OpenGL::GL
     glfw
     GLEW::GLEW
+
     ${VTK_LIBRARIES}
 )
 
 target_compile_options(AdaptiveRobotVision PRIVATE
-    -Wall
-    -Wextra
-    -fno-omit-frame-pointer
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>
 )
 
 set_target_properties(AdaptiveRobotVision PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+
     BUILD_RPATH
     "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib;$ORIGIN/../third_party/cudnn/lib;/usr/local/cuda/targets/x86_64-linux/lib"
 

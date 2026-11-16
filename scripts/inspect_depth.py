@@ -2,7 +2,7 @@
 import onnxruntime as ort
 import numpy as np
 
-model_path = "models/yolo26n-depth.onnx"
+model_path = "models/yolo26s-depth.onnx"
 
 session = ort.InferenceSession(
     model_path,

@@ -1,7 +1,7 @@
-
 #pragma once
 
 #include "core/Prediction.hpp"
+#include "estimators/SegmentationKernels.cuh"
 
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/opencv.hpp>
@@ -10,6 +10,7 @@
 
 class SegmentationEstimator : public Prediction {
 public:
+
     explicit SegmentationEstimator(
         const std::string& modelPath
     );
@@ -29,13 +30,15 @@ public:
     cv::Mat getSegmentationMask() const;
 
 private:
-    static constexpr int inputWidth = 640;
-    static constexpr int inputHeight = 640;
+
+    static constexpr int inputWidth = 768;
+    static constexpr int inputHeight = 768;
 
     Ort::Env env;
     Ort::Session session;
 
     cv::Mat visualization_;
-
     cv::Mat segmentationMask_;
+
+    SegmentationKernels::Processor cudaProcessor_;
 };

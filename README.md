@@ -7,15 +7,9 @@ DynamicRobotVision is an experimental project exploring dynamic inference schedu
 
 The project explores a simple idea: **instead of running every perception model at all times, can we allocate computational resources dynamically according to the current scene and perception requirements?**
 
-## Demonstrations
-
-The following videos demonstrate the perception pipeline and its qualitative 3D reconstruction capabilities.
-
-### Demo 1
+## Demons
 
 https://github.com/user-attachments/assets/8f981423-4d29-4190-96f0-e7d90359656b
-
-### Demo 2
 
 https://github.com/user-attachments/assets/REPLACE-WITH-DEMO-2
 

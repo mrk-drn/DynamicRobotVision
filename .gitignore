@@ -1,7 +1,6 @@
 notes.txt
-*.pdf
 
 third_party/*
 models/*
 build*
-assets*
+assets/videos/*

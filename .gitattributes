@@ -1,7 +1,0 @@
-*.cu linguist-language=Cuda
-*.cuh linguist-language=Cuda
-
-src/**/*.cu -linguist-vendored
-src/**/*.cuh -linguist-vendored
-include/**/*.cu -linguist-vendored
-include/**/*.cuh -linguist-vendored

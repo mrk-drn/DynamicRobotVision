@@ -1,16 +1,8 @@
 cmake_minimum_required(VERSION 3.17)
 
-project(AdaptivePerception LANGUAGES CXX CUDA)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+project(DynamicRobotVision LANGUAGES CXX CUDA)
 
 find_package(CUDAToolkit REQUIRED)
-
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 
 find_package(OpenCV REQUIRED COMPONENTS
@@ -45,12 +37,15 @@ find_package(VTK REQUIRED COMPONENTS
 
 message(STATUS "VTK version: ${VTK_VERSION}")
 
+# ONNX Runtime configuration
+
 set(ONNXRUNTIME_ROOT
     "${PROJECT_SOURCE_DIR}/third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1"
+    CACHE PATH "Path to ONNX Runtime installation"
 )
 
 find_path(ONNXRUNTIME_INCLUDE_DIR
-    onnxruntime_cxx_api.h
+    NAMES onnxruntime_cxx_api.h
     PATHS "${ONNXRUNTIME_ROOT}/include"
     NO_DEFAULT_PATH
     REQUIRED
@@ -70,12 +65,15 @@ set_target_properties(ONNXRuntime::ONNXRuntime PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}"
 )
 
+# cuDNN configuration
+
 set(CUDNN_ROOT
     "${PROJECT_SOURCE_DIR}/third_party/cudnn"
+    CACHE PATH "Path to cuDNN installation"
 )
 
 find_path(CUDNN_INCLUDE_DIR
-    cudnn.h
+    NAMES cudnn.h
     PATHS "${CUDNN_ROOT}/include"
     NO_DEFAULT_PATH
     REQUIRED
@@ -87,6 +85,8 @@ find_library(CUDNN_LIBRARY
     NO_DEFAULT_PATH
     REQUIRED
 )
+
+# Source files
 
 set(SOURCES
     src/main.cpp
@@ -110,15 +110,34 @@ set(SOURCES
     src/visualization/PointCloudKernels.cu
 )
 
-add_executable(AdaptiveRobotVision ${SOURCES})
+# Executable
 
-target_include_directories(AdaptiveRobotVision PRIVATE
+add_executable(DynamicRobotVision ${SOURCES})
+
+# Language standards
+
+set_target_properties(DynamicRobotVision PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON
+
+    CUDA_SEPARABLE_COMPILATION OFF
+)
+
+# Include directories
+
+target_include_directories(DynamicRobotVision PRIVATE
     ${OpenCV_INCLUDE_DIRS}
     ${PROJECT_SOURCE_DIR}/include
     ${CUDNN_INCLUDE_DIR}
 )
 
-target_link_libraries(AdaptiveRobotVision PRIVATE
+# Link libraries
+
+target_link_libraries(DynamicRobotVision PRIVATE
     Eigen3::Eigen
     ${OpenCV_LIBS}
 
@@ -134,25 +153,31 @@ target_link_libraries(AdaptiveRobotVision PRIVATE
     ${VTK_LIBRARIES}
 )
 
-target_compile_options(AdaptiveRobotVision PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
-    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
-    $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>
+# Compiler options
+
+target_compile_options(DynamicRobotVision PRIVATE
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang>>:-Wall>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang>>:-Wextra>
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU,Clang>>:-fno-omit-frame-pointer>
 )
 
-set_target_properties(AdaptiveRobotVision PROPERTIES
-    CUDA_SEPARABLE_COMPILATION OFF
+# Runtime library paths
 
-    BUILD_RPATH
-    "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib;$ORIGIN/../third_party/cudnn/lib;/usr/local/cuda/targets/x86_64-linux/lib"
+set(RUNTIME_LIBRARY_PATHS
+    "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib"
+    "$ORIGIN/../third_party/cudnn/lib"
+    "${CUDAToolkit_LIBRARY_DIR}"
+)
 
-    INSTALL_RPATH
-    "$ORIGIN/../third_party/onnx/onnxruntime-linux-x64-gpu_cuda13-1.30.1/lib;$ORIGIN/../third_party/cudnn/lib;/usr/local/cuda/targets/x86_64-linux/lib"
-
+set_target_properties(DynamicRobotVision PROPERTIES
+    BUILD_RPATH "${RUNTIME_LIBRARY_PATHS}"
+    INSTALL_RPATH "${RUNTIME_LIBRARY_PATHS}"
     BUILD_RPATH_USE_ORIGIN TRUE
 )
 
+# VTK module initialization
+
 vtk_module_autoinit(
-    TARGETS AdaptiveRobotVision
+    TARGETS DynamicRobotVision
     MODULES ${VTK_LIBRARIES}
 )

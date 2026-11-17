@@ -1,7 +1,7 @@
 
 # Dynamic Robot Vision
 
-**Resource-Aware Visual Perception and 3D Reconstruction for Robotics and Autonomous Systems**
+**Motion-Aware and Resource-Constrained Semantic 3D Reconstruction for Robotics and Autonomous Driving**
 
 DynamicRobotVision is an experimental project exploring dynamic inference scheduling under GPU resource constraints. It combines depth estimation, object detection, and semantic segmentation with CUDA-accelerated processing to investigate how multiple perception capabilities can be coordinated without executing every model continuously.
 

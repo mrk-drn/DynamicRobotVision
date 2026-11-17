@@ -7,7 +7,7 @@ DynamicRobotVision is an experimental project exploring dynamic inference schedu
 
 The project explores a simple idea: **instead of running every perception model at all times, can we allocate computational resources dynamically according to the current scene and perception requirements?**
 
-## Demons
+## Demos
 
 https://github.com/user-attachments/assets/8f981423-4d29-4190-96f0-e7d90359656b
 

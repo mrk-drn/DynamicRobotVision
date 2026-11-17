@@ -1,9 +1,9 @@
 
 # DynamicRobotVision
 
-**Resource-Aware Visual Perception and Qualitative 3D Reconstruction for Robotics and Autonomous Systems**
+**Resource-Aware Visual Perception and 3D Reconstruction for Robotics and Autonomous Systems**
 
-DynamicRobotVision is an experimental computer vision project exploring dynamic inference scheduling under GPU resource constraints. It combines depth estimation, object detection, and semantic segmentation with CUDA-accelerated processing to investigate how multiple perception capabilities can be coordinated without executing every model continuously.
+DynamicRobotVision is an experimental project exploring dynamic inference scheduling under GPU resource constraints. It combines depth estimation, object detection, and semantic segmentation with CUDA-accelerated processing to investigate how multiple perception capabilities can be coordinated without executing every model continuously.
 
 The project explores a simple idea: **instead of running every perception model at all times, can we allocate computational resources dynamically according to the current scene and perception requirements?**
 
@@ -35,7 +35,7 @@ The underlying motivation is that perception requirements can vary with the envi
 
 - **Moving environments:** More precise object boundaries can be particularly useful when reasoning about obstacles and potential collisions. Therefore, semantic segmentation is preferred when motion is detected.
 - **Relatively static environments:** Object detection provides a more lightweight representation of the scene and is selected when significant motion is not detected.
-- **Depth estimation:** Runs independently of the motion-based decision and provides depth information that can be combined with the latest available perception results.
+- **Depth estimation:** Runs independently of the motion-based decision and provides depth information that can be combined with the latest available perception results for 3D reconstruction.
 
 The objective is to explore whether dynamically allocating inference resources can provide useful visual understanding without requiring all perception models to execute continuously.
 
@@ -61,7 +61,7 @@ The scheduling logic is:
 
 1. **Depth estimation:** Every other scheduled inference, the depth estimation model is executed.
 2. **Motion-dependent perception:** On alternating inference steps:
-   - If motion is detected, semantic segmentation is executed.
+   - If large motion is detected, semantic segmentation is executed.
    - Otherwise, object detection is executed.
 3. **3D reconstruction:** The latest depth prediction is combined with the most recently available segmentation or detection colour map.
 
@@ -77,12 +77,10 @@ It combines:
 
 - Predicted depth maps.
 - Pixel-level colour information from the latest perception result.
-- Camera intrinsic parameters.
+- Assumed (fixed) camera intrinsic parameters.
 - A configurable sampling strategy.
 
-The resulting visualization provides a qualitative proof of concept for maintaining a form of 3D scene understanding using dynamically scheduled perception tasks.
-
-It is intended as an experimental visualization rather than a metrically validated 3D reconstruction system.
+The resulting visualization provides a qualitative proof of concept for maintaining a form of 3D scene understanding using dynamically scheduled perception tasks. It is intended as an experimental visualization rather than a metrically validated 3D reconstruction system.
 
 ## Technical Implementation
 

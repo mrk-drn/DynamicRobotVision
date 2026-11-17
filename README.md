@@ -13,13 +13,9 @@ The following videos demonstrate the perception pipeline and its qualitative 3D 
 
 ### Demo 1
 
-<!-- Replace with your first demonstration video -->
-
-https://github.com/user-attachments/assets/REPLACE-WITH-DEMO-1
+https://github.com/user-attachments/assets/8f981423-4d29-4190-96f0-e7d90359656b
 
 ### Demo 2
-
-<!-- Replace with your second demonstration video -->
 
 https://github.com/user-attachments/assets/REPLACE-WITH-DEMO-2
 

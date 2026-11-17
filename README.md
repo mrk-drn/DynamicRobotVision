@@ -9,9 +9,9 @@ The project explores a simple idea: **instead of running every perception model 
 
 ## Demos
 
-https://github.com/user-attachments/assets/8f981423-4d29-4190-96f0-e7d90359656b
+https://github.com/user-attachments/assets/e10abd70-25dc-43c2-9dc3-319b2282ff39
 
-https://github.com/user-attachments/assets/REPLACE-WITH-DEMO-2
+https://github.com/user-attachments/assets/8f981423-4d29-4190-96f0-e7d90359656b
 
 ## Motivation
 

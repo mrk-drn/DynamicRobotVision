@@ -39,8 +39,6 @@ The underlying motivation is that perception requirements can vary with the envi
 
 The objective is to explore whether dynamically allocating inference resources can provide useful visual understanding without requiring all perception models to execute continuously.
 
-This is an experimental exploration rather than an attempt to establish a new perception paradigm or claim state-of-the-art performance.
-
 ## System Overview
 
 The current implementation combines three neural network-based perception tasks with GPU-accelerated motion estimation and point-cloud reconstruction.

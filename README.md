@@ -1,5 +1,5 @@
 
-# DynamicRobotVision
+# Dynamic Robot Vision
 
 **Resource-Aware Visual Perception and 3D Reconstruction for Robotics and Autonomous Systems**
 
@@ -11,13 +11,13 @@ The project explores a simple idea: **instead of running every perception model 
 
 The following videos demonstrate the perception pipeline and its qualitative 3D reconstruction capabilities.
 
-### Demo 1 – Dynamic Visual Perception
+### Demo 1
 
 <!-- Replace with your first demonstration video -->
 
 https://github.com/user-attachments/assets/REPLACE-WITH-DEMO-1
 
-### Demo 2 – Qualitative 3D Reconstruction
+### Demo 2
 
 <!-- Replace with your second demonstration video -->
 
